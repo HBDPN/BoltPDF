@@ -46,6 +46,7 @@ import subprocess
 import tempfile
 import time
 import copy
+import hashlib
 
 __version__ = "1.0.3"
 _UPDATE_URL = "https://raw.githubusercontent.com/HBDPN/BoltPDF/main/version.json"
@@ -1329,6 +1330,9 @@ class EditRecord:
                  stroke_color=None,      # (r,g,b) 0-255
                  stroke_width=2.0,
                  fill_color=None,        # (r,g,b) 0-255 or None
+                 stroke_style="solid",   # 'solid' | 'dash' | 'dot'
+                 fill_opacity=80,        # 0-255 (alpha for fill)
+                 arrow_both=False,       # arrowheads on both ends
                  # Line/arrow endpoints in PDF points
                  line_start=None,        # (x, y)
                  line_end=None,          # (x, y)
@@ -1362,6 +1366,10 @@ class EditRecord:
         self.stroke_color = stroke_color or color
         self.stroke_width = stroke_width
         self.fill_color = fill_color
+        self.stroke_style = stroke_style or "solid"
+        self.fill_opacity = (80 if fill_opacity is None
+                             else int(fill_opacity))
+        self.arrow_both = bool(arrow_both)
         self.line_start = line_start
         self.line_end = line_end
         # Sticky note icon
@@ -1373,6 +1381,40 @@ class EditRecord:
         # record, so history snapshots stay self-contained.
         self.extra: dict = {}
 
+
+
+def _pymupdf_base14(font_name, bold: bool, italic: bool) -> str:
+    """Map a detected font (its PDF/internal name + style flags) to a
+    valid PyMuPDF Base-14 builtin code.
+
+    The detector stores names like 'tiro-bi' / 'helv-b' which are NOT
+    accepted by insert_textbox (real codes are 4 letters: helv/hebo/
+    heit/hebi, tiro/tibo/tiit/tibi, cour/cobo/coit/cobi).  Using this
+    keeps serif/sans/mono + bold/italic on edited & moved text instead
+    of everything collapsing to plain Helvetica.  Always returns a
+    valid builtin, so Save As can never fail on the font."""
+    fn = (font_name or "").lower()
+    if "cour" in fn or "mono" in fn or "consol" in fn:
+        reg, b, i, bi = "cour", "cobo", "coit", "cobi"
+    elif ("tiro" in fn or "time" in fn or "serif" in fn or "roman" in fn
+          or "georgia" in fn or "garamond" in fn or "minion" in fn
+          or "cambria" in fn or "book" in fn):
+        reg, b, i, bi = "tiro", "tibo", "tiit", "tibi"
+    else:
+        reg, b, i, bi = "helv", "hebo", "heit", "hebi"
+    if ("bold" in fn or fn.endswith("-b") or fn.endswith("-bi")
+            or "-bi" in fn):
+        bold = True
+    if ("italic" in fn or "oblique" in fn or fn.endswith("-i")
+            or fn.endswith("-bi") or "-bi" in fn):
+        italic = True
+    if bold and italic:
+        return bi
+    if bold:
+        return b
+    if italic:
+        return i
+    return reg
 
 
 class SaveEditedPdfWorker(QThread):
@@ -1530,7 +1572,15 @@ class SaveEditedPdfWorker(QThread):
                             # fitz expects.
                             if any(c > 1 for c in color):
                                 color = tuple(c / 255.0 for c in color)
-                            font_name = ed.font_name or "helv"
+                            # E8: pick a real Base-14 code matching the
+                            # original style (serif/sans/mono + b/i) so
+                            # edited & moved text blends in instead of
+                            # collapsing to plain Helvetica.
+                            _ex = getattr(ed, "extra", None) or {}
+                            font_name = _pymupdf_base14(
+                                ed.font_name,
+                                bool(_ex.get("bold")),
+                                bool(_ex.get("italic")))
 
                             # If the record carries rich HTML from the
                             # formatting toolbar, try insert_htmlbox
@@ -1673,49 +1723,122 @@ class SaveEditedPdfWorker(QThread):
                                 if any(c > 1 for c in f_color):
                                     f_color = tuple(c / 255.0 for c in f_color)
                             sw = ed.stroke_width or 2.0
-                            shape = page.new_shape()
+                            sstyle = getattr(ed, "stroke_style",
+                                             "solid")
                             stype = ed.shape_type or "rect"
-                            if stype == "rect":
-                                shape.draw_rect(rect)
-                            elif stype == "circle":
-                                shape.draw_oval(rect)
-                            elif stype in ("line", "arrow"):
-                                p1 = fitz.Point(
-                                    *(ed.line_start or (rect.x0, rect.y0)))
-                                p2 = fitz.Point(
-                                    *(ed.line_end or (rect.x1, rect.y1)))
-                                shape.draw_line(p1, p2)
-                            shape.finish(
-                                color=s_color, width=sw,
-                                fill=f_color,
-                                closePath=(stype in ("rect", "circle")))
-                            shape.commit()
-                            # Arrow head
-                            if stype == "arrow":
-                                import math
-                                p1 = ed.line_start or (rect.x0, rect.y0)
-                                p2 = ed.line_end or (rect.x1, rect.y1)
-                                dx = p2[0] - p1[0]
-                                dy = p2[1] - p1[1]
-                                angle = math.atan2(dy, dx)
-                                hl = min(12, sw * 4)
-                                a1 = angle + math.pi * 0.85
-                                a2 = angle - math.pi * 0.85
-                                shape2 = page.new_shape()
-                                tip = fitz.Point(*p2)
-                                shape2.draw_line(
-                                    tip,
-                                    fitz.Point(
-                                        p2[0] + hl * math.cos(a1),
-                                        p2[1] + hl * math.sin(a1)))
-                                shape2.draw_line(
-                                    tip,
-                                    fitz.Point(
-                                        p2[0] + hl * math.cos(a2),
-                                        p2[1] + hl * math.sin(a2)))
-                                shape2.finish(
-                                    color=s_color, width=sw)
-                                shape2.commit()
+                            fo = 1.0
+                            if f_color is not None:
+                                fo = max(0.0, min(
+                                    1.0,
+                                    (getattr(ed, "fill_opacity", 80)
+                                     or 80) / 255.0))
+                            ls = ed.line_start or (rect.x0, rect.y0)
+                            le = ed.line_end or (rect.x1, rect.y1)
+
+                            def _shape_fallback():
+                                """Legacy baked-content path — used only
+                                if the annotation API is unavailable, so
+                                Save As can never fail outright."""
+                                dz = {"dash": "[4 3] 0",
+                                      "dot": "[1 3] 0"}.get(sstyle)
+                                shp = page.new_shape()
+                                if stype == "rect":
+                                    shp.draw_rect(rect)
+                                elif stype == "circle":
+                                    shp.draw_oval(rect)
+                                else:
+                                    shp.draw_line(fitz.Point(*ls),
+                                                  fitz.Point(*le))
+                                shp.finish(
+                                    color=s_color, width=sw,
+                                    fill=f_color, dashes=dz,
+                                    fill_opacity=fo,
+                                    closePath=(stype in ("rect",
+                                                         "circle")))
+                                shp.commit()
+                                if stype == "arrow":
+                                    import math
+                                    hl = min(12, sw * 4)
+                                    ends = [(le, math.atan2(
+                                        le[1] - ls[1], le[0] - ls[0]))]
+                                    if getattr(ed, "arrow_both", False):
+                                        ends.append((ls, math.atan2(
+                                            ls[1] - le[1],
+                                            ls[0] - le[0])))
+                                    s2 = page.new_shape()
+                                    for (tx, ty), ang in ends:
+                                        for da in (math.pi * 0.85,
+                                                   -math.pi * 0.85):
+                                            s2.draw_line(
+                                                fitz.Point(tx, ty),
+                                                fitz.Point(
+                                                    tx + hl
+                                                    * math.cos(ang + da),
+                                                    ty + hl
+                                                    * math.sin(ang
+                                                               + da)))
+                                    s2.finish(color=s_color, width=sw)
+                                    s2.commit()
+
+                            # E7: write shapes as real, editable PDF
+                            # annotations (Square / Circle / Line).
+                            try:
+                                annot = None
+                                if stype == "rect":
+                                    annot = page.add_rect_annot(rect)
+                                elif stype == "circle":
+                                    annot = page.add_circle_annot(rect)
+                                elif stype in ("line", "arrow"):
+                                    annot = page.add_line_annot(
+                                        fitz.Point(*ls),
+                                        fitz.Point(*le))
+                                    if (stype == "arrow"
+                                            and annot is not None):
+                                        try:
+                                            start_le = (
+                                                fitz.PDF_ANNOT_LE_OpenArrow
+                                                if getattr(
+                                                    ed, "arrow_both",
+                                                    False)
+                                                else
+                                                fitz.PDF_ANNOT_LE_None)
+                                            annot.set_line_ends(
+                                                start_le,
+                                                fitz.
+                                                PDF_ANNOT_LE_OpenArrow)
+                                        except Exception:
+                                            pass
+                                if annot is None:
+                                    _shape_fallback()
+                                else:
+                                    cols = {"stroke": s_color}
+                                    if (f_color is not None
+                                            and stype in ("rect",
+                                                          "circle")):
+                                        cols["fill"] = f_color
+                                    annot.set_colors(**cols)
+                                    try:
+                                        dl = {"dash": [4, 3],
+                                              "dot": [1, 3]}.get(sstyle)
+                                        if dl:
+                                            annot.set_border(
+                                                width=sw, dashes=dl)
+                                        else:
+                                            annot.set_border(width=sw)
+                                    except Exception:
+                                        pass
+                                    if (f_color is not None
+                                            and fo < 1.0):
+                                        try:
+                                            annot.set_opacity(fo)
+                                        except Exception:
+                                            pass
+                                    annot.update()
+                            except Exception:
+                                try:
+                                    _shape_fallback()
+                                except Exception:
+                                    pass
 
                         elif ed.kind == "redact_add":
                             if ed.new_rect is None:
@@ -1739,6 +1862,23 @@ class SaveEditedPdfWorker(QThread):
                                     page.apply_redactions()
                                 except Exception:
                                     pass
+
+                        elif ed.kind == "highlight_add":
+                            if ed.new_rect is None:
+                                continue
+                            rect = fitz.Rect(*ed.new_rect)
+                            try:
+                                annot = page.add_highlight_annot(rect)
+                                if annot is not None:
+                                    annot.set_colors(
+                                        stroke=(1.0, 0.92, 0.23))
+                                    try:
+                                        annot.set_opacity(0.4)
+                                    except Exception:
+                                        pass
+                                    annot.update()
+                            except Exception:
+                                pass
 
                         elif ed.kind == "note_add":
                             if ed.new_rect is None or not ed.text:
@@ -1952,13 +2092,12 @@ class PDFGraphicsView(QGraphicsView):
             return
         page_y = tab._page_positions[page_idx]
         page_h = tab._page_heights[page_idx]
-        page_w = 0
-        for item in self.scene().items():
-            if isinstance(item, QGraphicsRectItem) and item.zValue() == -1:
-                r = item.rect()
-                if abs(r.y() - page_y) < 1:
-                    page_w = r.width()
-                    break
+        # Use the authoritative per-page metrics (spread-aware) instead
+        # of scanning the scene by Y — in two-page-spread layout two
+        # pages share a Y, so the old scan grabbed the wrong page and
+        # mis-centred right-hand pages.
+        page_w = tab._page_widths.get(page_idx, 0)
+        page_x = tab._page_x.get(page_idx, 0.0)
         if page_w == 0:
             return
 
@@ -1976,7 +2115,8 @@ class PDFGraphicsView(QGraphicsView):
         self.scale(target, target)
         self.zoom_changed.emit(self._current_scale)
 
-        page_center = QPointF(page_w / 2, page_y + page_h / 2)
+        page_center = QPointF(page_x + page_w / 2,
+                              page_y + page_h / 2)
         self.centerOn(page_center)
 
     def fit_go_to_page(self, page_idx: int):
@@ -2032,7 +2172,8 @@ class PDFGraphicsView(QGraphicsView):
         if (tab and tab._edit_mode
                 and event.button() == Qt.MouseButton.LeftButton):
             scene_pos = self.mapToScene(event.pos())
-            drag_actions = ("redact", "shape_rect", "shape_circle",
+            drag_actions = ("redact", "highlight", "multiselect",
+                            "shape_rect", "shape_circle",
                             "shape_line", "shape_arrow")
             if tab._edit_action in ('add_text', 'add_image',
                                      'stamp', 'note'):
@@ -2983,6 +3124,13 @@ class TransformSelection:
             r.setWidth(14)
         if r.height() < 14:
             r.setHeight(14)
+        # E3: snap to nearby objects / page margins on a move drag
+        # (only translation — resize/rotate are left exact).
+        if role == "move":
+            try:
+                r = self.tab.apply_snap(r, self.page_idx, self.record)
+            except Exception:
+                pass
         self.rect = r
         self._sync_overlay()
         self._commit_to_record()
@@ -2992,6 +3140,10 @@ class TransformSelection:
         self._drag_start_pt = None
         self._drag_start_rect = None
         self._commit_to_record()
+        try:
+            self.tab._clear_snap_guides()
+        except Exception:
+            pass
         # One undo step per completed move/resize/rotate gesture (not
         # per mouse-move, and not for a no-op click that never dragged).
         if getattr(self, "_moved", False):
@@ -3027,6 +3179,10 @@ class TransformSelection:
                 pass
         self.handles.clear()
         self.visuals = []
+        try:
+            self.tab._clear_snap_guides()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -3054,6 +3210,12 @@ class DocumentTab(QWidget):
         self._ocr_worker = None
         self._page_items: dict[int, QGraphicsPixmapItem] = {}
         self._page_positions: dict[int, float] = {}
+        # Per-page scene X origin (0 for continuous/single; non-zero for
+        # the right-hand page of a two-page spread).  Centralising it
+        # here means _pt_to_scene / _scene_to_pt — which every overlay
+        # subsystem already uses — handle spread automatically.
+        self._page_x: dict[int, float] = {}
+        self._reading_mode: str = "continuous"
         self._page_heights: dict[int, float] = {}
         self._page_widths: dict[int, float] = {}
 
@@ -3102,6 +3264,11 @@ class DocumentTab(QWidget):
         self._edit_history_index: int = -1
         self._edit_restoring: bool = False
         self._EDIT_HISTORY_CAP = 100
+        # Debounced crash-recovery journal writer (E5).
+        self._journal_timer = QTimer(self)
+        self._journal_timer.setSingleShot(True)
+        self._journal_timer.setInterval(1200)
+        self._journal_timer.timeout.connect(self._write_journal)
         self._save_worker = None
         self._save_progress = None
         # When the user clicks "Replace Image" in edit mode, we flip
@@ -3131,6 +3298,16 @@ class DocumentTab(QWidget):
         # represent, so clicks on a previously-edited item re-select
         # the existing record instead of creating a duplicate.
         self._active_transform: "TransformSelection | None" = None
+        # E2 multi-select (dedicated "Select" tool — independent of the
+        # single-object Transform path).  _multi_sel holds records;
+        # _multi_hl holds the dashed highlight items drawn around them.
+        self._multi_sel: list = []
+        self._multi_hl: list = []
+        self._next_group_id: int = 0
+        # E3 snapping: snap a moved object's edges/centre to other
+        # objects and the page margins, with live guide lines.
+        self._snap_enabled: bool = True
+        self._snap_guide_items: list = []
         self._item_to_record: dict = {}
         # All visual scene items belonging to a single record, so the
         # Transform tool can move them as a group and Delete can remove
@@ -3233,6 +3410,7 @@ class DocumentTab(QWidget):
         self._scene.clear()
         self._page_items.clear()
         self._page_positions.clear()
+        self._page_x.clear()
         self._page_heights.clear()
         self._page_widths.clear()
         self._page_word_overlays.clear()
@@ -3326,18 +3504,35 @@ class DocumentTab(QWidget):
         y_offset = 0.0
         est_w = default_pt_w * self._render_scale
         est_h = default_pt_h * self._render_scale
+        spread = (self._reading_mode == "spread"
+                  and self._num_pages > 1)
+        col2_x = est_w + gap  # x-origin of the right-hand page
         for i in range(self._num_pages):
-            self._page_positions[i] = y_offset
+            if spread:
+                # Simple pairs: 0|1, 2|3, …  Left page at x=0, right
+                # page at col2_x, both sharing the same row (y).
+                if i % 2 == 0:
+                    page_x, row_y = 0.0, y_offset
+                else:
+                    page_x, row_y = col2_x, y_offset
+            else:
+                page_x, row_y = 0.0, y_offset
+            self._page_positions[i] = row_y
+            self._page_x[i] = page_x
             self._page_heights[i] = est_h
             self._page_widths[i] = est_w
-            rect = self._scene.addRect(0, y_offset, est_w, est_h)
+            rect = self._scene.addRect(page_x, row_y, est_w, est_h)
             rect.setBrush(Qt.GlobalColor.white)
             rect.setPen(QPen(Qt.PenStyle.NoPen))
             rect.setZValue(-1)
-            y_offset += est_h + gap
+            # Advance to the next row after the right page (or after a
+            # lone last page) in spread; every page in single column.
+            if not spread or i % 2 == 1 or i == self._num_pages - 1:
+                y_offset += est_h + gap
 
+        scene_w = (col2_x + est_w) if spread else est_w
         self._scene.setSceneRect(
-            QRectF(-20, -20, est_w + 40, y_offset + 40))
+            QRectF(-20, -20, scene_w + 40, y_offset + 40))
         self._view.set_scale(1.0)
         vsb = self._view.verticalScrollBar()
         if vsb:
@@ -3356,6 +3551,8 @@ class DocumentTab(QWidget):
         self._load_annotations()
 
         self.status_changed.emit()
+        # Offer to restore any unsaved edits from a previous session.
+        QTimer.singleShot(0, self._maybe_recover_edits)
 
     # -- Comment annotations ------------------------------------------------
     def _load_annotations(self):
@@ -3479,7 +3676,8 @@ class DocumentTab(QWidget):
                   file=sys.stderr)
             return
         item = QGraphicsPixmapItem(pixmap)
-        item.setPos(0, self._page_positions.get(idx, 0))
+        item.setPos(self._page_x.get(idx, 0.0),
+                    self._page_positions.get(idx, 0))
         item.setZValue(0)
         self._scene.addItem(item)
         self._page_items[idx] = item
@@ -3649,7 +3847,9 @@ class DocumentTab(QWidget):
         if not self._page_positions or idx not in self._page_positions:
             return
         try:
-            self._view.centerOn(0, self._page_positions[idx])
+            cx = (self._page_x.get(idx, 0.0)
+                  + self._page_widths.get(idx, 0.0) / 2.0)
+            self._view.centerOn(cx, self._page_positions[idx])
             if self._renderer and self._renderer.isRunning():
                 self._renderer.set_focus(idx)
             if self._image_select_mode:
@@ -3804,16 +4004,20 @@ class DocumentTab(QWidget):
 
     # -- coordinate conversion --------------------------------------------
     def _pt_to_scene(self, page_idx: int, x_pt: float, y_pt: float):
-        """Convert PDF-point coordinates on *page_idx* to scene (x, y)."""
+        """Convert PDF-point coordinates on *page_idx* to scene (x, y).
+        Includes the per-page X origin so two-page-spread layout works
+        for every overlay subsystem that routes through here."""
         scale = self._render_scale
         page_y = self._page_positions.get(page_idx, 0)
-        return (x_pt * scale, page_y + y_pt * scale)
+        page_x = self._page_x.get(page_idx, 0.0)
+        return (page_x + x_pt * scale, page_y + y_pt * scale)
 
     def _scene_to_pt(self, page_idx: int, sx: float, sy: float):
         """Convert scene coordinates to PDF points on *page_idx*."""
         scale = self._render_scale or 1.0
         page_y = self._page_positions.get(page_idx, 0)
-        return (sx / scale, (sy - page_y) / scale)
+        page_x = self._page_x.get(page_idx, 0.0)
+        return ((sx - page_x) / scale, (sy - page_y) / scale)
 
     def _scene_rect_to_pt(self, page_idx: int, rect: QRectF):
         """Translate a scene-space QRectF to a PDF-point tuple."""
@@ -3890,6 +4094,7 @@ class DocumentTab(QWidget):
         self._edit_image_pick_mode = None
         if discard_edits:
             self._edit_records.clear()
+            self._clear_recovery()
             # Remove the live-preview items so the page reverts.
             self._teardown_edit_overlays()
         self._view.unsetCursor()
@@ -3919,6 +4124,9 @@ class DocumentTab(QWidget):
         self._record_covers.clear()
         self._item_to_record.clear()
         self._record_visuals.clear()
+        # Stale multi-select highlights point at now-removed items.
+        self.clear_multi_selection()
+        self._clear_snap_guides()
 
     def _snapshot_edit_records(self) -> list:
         """Deep copy so later mutations never alias a history entry."""
@@ -3936,7 +4144,152 @@ class DocumentTab(QWidget):
         if len(self._edit_history) > self._EDIT_HISTORY_CAP:
             self._edit_history.pop(0)
         self._edit_history_index = len(self._edit_history) - 1
+        # Crash-recovery: persist pending edits shortly after a change.
+        if self._doc_path:
+            self._journal_timer.start()
         self.status_changed.emit()
+
+    # -- E5: crash recovery ----------------------------------------------
+    @staticmethod
+    def _rec_to_dict(rec) -> dict:
+        return dict(rec.__dict__)
+
+    @staticmethod
+    def _rec_from_dict(d: dict):
+        r = EditRecord(kind=d.get("kind", "shape_add"),
+                        page_idx=d.get("page_idx", 0))
+        r.__dict__.update(d)
+        return r
+
+    def _recovery_path(self) -> str | None:
+        if not self._doc_path:
+            return None
+        base = os.path.join(
+            os.environ.get("LOCALAPPDATA", tempfile.gettempdir()),
+            "BoltPDF", "recovery")
+        try:
+            os.makedirs(base, exist_ok=True)
+        except OSError:
+            return None
+        key = hashlib.sha1(
+            os.path.normcase(os.path.abspath(self._doc_path))
+            .encode("utf-8", "replace")).hexdigest()
+        return os.path.join(base, key + ".json")
+
+    def _write_journal(self):
+        p = self._recovery_path()
+        if p is None:
+            return
+        try:
+            if not self._edit_records:
+                # Nothing pending → drop any stale journal.
+                if os.path.isfile(p):
+                    os.remove(p)
+                return
+            payload = {
+                "doc": self._doc_path,
+                "saved_at": time.time(),
+                "records": [self._rec_to_dict(r)
+                            for r in self._edit_records],
+            }
+            tmp = p + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
+            os.replace(tmp, p)
+        except (OSError, TypeError, ValueError):
+            pass
+
+    def _clear_recovery(self):
+        self._journal_timer.stop()
+        p = self._recovery_path()
+        if p and os.path.isfile(p):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+    def _maybe_recover_edits(self):
+        """If a crash-recovery journal exists for this document, offer
+        to restore the unsaved edits.  Called at the end of load_pdf."""
+        p = self._recovery_path()
+        if not p or not os.path.isfile(p):
+            return
+        try:
+            with open(p, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+            recs = payload.get("records", [])
+        except (OSError, ValueError):
+            return
+        if not recs:
+            self._clear_recovery()
+            return
+        resp = QMessageBox.question(
+            self.window(), "Recover unsaved edits",
+            f"BoltPDF found {len(recs)} unsaved edit(s) for this "
+            "document from a previous session.\n\nRestore them?",
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.No)
+        if resp != QMessageBox.StandardButton.Yes:
+            self._clear_recovery()
+            return
+        try:
+            self._edit_records = [self._rec_from_dict(d) for d in recs]
+        except Exception:
+            self._clear_recovery()
+            return
+        if not self._edit_mode:
+            self.enter_edit_mode()
+        self._rebuild_edit_overlays()
+        self._edit_history_reset()
+        self.status_changed.emit()
+
+    # -- E5: copy / paste / duplicate ------------------------------------
+    def copy_selected_edit(self) -> bool:
+        rec = self.selected_record()
+        if rec is None:
+            return False
+        global _EDIT_CLIPBOARD
+        _EDIT_CLIPBOARD = copy.deepcopy(rec)
+        return True
+
+    def paste_edit(self) -> bool:
+        global _EDIT_CLIPBOARD
+        if _EDIT_CLIPBOARD is None or not self._edit_mode:
+            return False
+        clone = copy.deepcopy(_EDIT_CLIPBOARD)
+        # Land the paste on the page the user is currently viewing
+        # (enables cross-page paste); nudge it so it isn't hidden
+        # exactly behind the original.
+        try:
+            clone.page_idx = self._view._detect_current_page()
+        except Exception:
+            pass
+        off = 14.0
+        if clone.new_rect:
+            x0, y0, x1, y1 = clone.new_rect
+            clone.new_rect = (x0 + off, y0 + off,
+                              x1 + off, y1 + off)
+        if getattr(clone, "orig_rect", None):
+            clone.orig_rect = None  # a paste is a NEW addition
+            if clone.kind in ("text_move", "text_edit"):
+                clone.kind = "text_add"
+            elif clone.kind in ("image_move", "image_replace"):
+                clone.kind = "image_add"
+        for attr in ("line_start", "line_end"):
+            v = getattr(clone, attr, None)
+            if v:
+                setattr(clone, attr, (v[0] + off, v[1] + off))
+        self._edit_records.append(clone)
+        self._materialize_record(clone)
+        self._reselect_record(clone)
+        self._edit_checkpoint()
+        self.status_changed.emit()
+        return True
+
+    def duplicate_selected_edit(self) -> bool:
+        if not self.copy_selected_edit():
+            return False
+        return self.paste_edit()
 
     def _edit_history_reset(self):
         """Start a fresh history with the current state as baseline."""
@@ -4049,12 +4402,11 @@ class DocumentTab(QWidget):
             record=record, visuals=list(vis),
             rotation=getattr(record, "rotation", 0.0) or 0.0)
 
-    def apply_property_edit(self, record):
-        """Re-render *record* after the Properties panel mutated its
-        fields, keep it selected, and push one undo step."""
-        if record is None:
-            return
-        # Drop the record's current visuals + cover.
+    def _rebuild_one(self, record):
+        """Drop *record*'s current visuals + cover and re-materialize
+        them from the (mutated) record.  No reselect, no checkpoint —
+        callers decide.  Single source of truth, reused by the
+        Properties panel and the multi-select bulk operations."""
         for v in self._record_visuals.pop(id(record), []):
             try:
                 self._scene.removeItem(v)
@@ -4077,12 +4429,351 @@ class DocumentTab(QWidget):
                     self._live_edit_items.remove(cov)
                 except Exception:
                     pass
-        # Rebuild from the mutated record (single source of truth),
-        # re-wrap in handles, and record one undo step.
         self._materialize_record(record)
+
+    def apply_property_edit(self, record):
+        """Re-render *record* after the Properties panel mutated its
+        fields, keep it selected, and push one undo step."""
+        if record is None:
+            return
+        self._rebuild_one(record)
         self._reselect_record(record)
         self._edit_checkpoint()
         self.status_changed.emit()
+
+    # -- E2: multi-select (dedicated "Select" tool) ----------------------
+    def _record_scene_bounds(self, rec):
+        vis = self._record_visuals.get(id(rec), [])
+        b = None
+        for v in vis:
+            try:
+                r = v.sceneBoundingRect()
+            except Exception:
+                continue
+            b = r if b is None else b.united(r)
+        return b
+
+    def clear_multi_selection(self):
+        for h in self._multi_hl:
+            try:
+                self._scene.removeItem(h)
+            except Exception:
+                pass
+        self._multi_hl = []
+        self._multi_sel = []
+
+    def _draw_multi_highlights(self):
+        for h in self._multi_hl:
+            try:
+                self._scene.removeItem(h)
+            except Exception:
+                pass
+        self._multi_hl = []
+        for rec in self._multi_sel:
+            b = self._record_scene_bounds(rec)
+            if b is None:
+                continue
+            hl = QGraphicsRectItem(b.adjusted(-3, -3, 3, 3))
+            hl.setPen(QPen(QColor(51, 153, 255), 1.5,
+                           Qt.PenStyle.DashLine))
+            hl.setBrush(QBrush(QColor(51, 153, 255, 30)))
+            hl.setZValue(205)
+            self._scene.addItem(hl)
+            self._multi_hl.append(hl)
+
+    def set_multi_selection(self, records):
+        # Dismiss the single-object Transform so the two systems never
+        # fight over the same record.
+        if self._active_transform is not None:
+            try:
+                self._active_transform.dismiss()
+            except Exception:
+                pass
+            self._active_transform = None
+        seen = set()
+        uniq = []
+        for r in records:
+            if id(r) not in seen:
+                seen.add(id(r))
+                uniq.append(r)
+        self._multi_sel = uniq
+        self._draw_multi_highlights()
+        self.status_changed.emit()
+
+    def multiselect_from_band(self, rect_scene: QRectF):
+        hits = []
+        for rec in self._edit_records:
+            b = self._record_scene_bounds(rec)
+            if b is not None and b.intersects(rect_scene):
+                hits.append(rec)
+        self.set_multi_selection(hits)
+
+    def has_multi_selection(self) -> bool:
+        return len(self._multi_sel) > 0
+
+    def nudge_multi(self, dx_pt: float, dy_pt: float) -> bool:
+        if not self._multi_sel:
+            return False
+        for rec in self._multi_sel:
+            if rec.new_rect:
+                x0, y0, x1, y1 = rec.new_rect
+                rec.new_rect = (x0 + dx_pt, y0 + dy_pt,
+                                x1 + dx_pt, y1 + dy_pt)
+            for attr in ("line_start", "line_end"):
+                v = getattr(rec, attr, None)
+                if v:
+                    setattr(rec, attr,
+                            (v[0] + dx_pt, v[1] + dy_pt))
+            self._rebuild_one(rec)
+        self._draw_multi_highlights()
+        self._edit_checkpoint()
+        self.status_changed.emit()
+        return True
+
+    def _drop_record(self, rec):
+        """Remove a pure-addition record + its visuals entirely."""
+        for v in self._record_visuals.pop(id(rec), []):
+            try:
+                self._scene.removeItem(v)
+            except Exception:
+                pass
+            if v in self._live_edit_items:
+                try:
+                    self._live_edit_items.remove(v)
+                except Exception:
+                    pass
+            self._item_to_record.pop(v, None)
+        cov = self._record_covers.pop(id(rec), None)
+        if cov is not None:
+            try:
+                self._scene.removeItem(cov)
+            except Exception:
+                pass
+            if cov in self._live_edit_items:
+                try:
+                    self._live_edit_items.remove(cov)
+                except Exception:
+                    pass
+        try:
+            if rec in self._edit_records:
+                self._edit_records.remove(rec)
+        except Exception:
+            pass
+
+    def delete_multi(self) -> bool:
+        if not self._multi_sel:
+            return False
+        for rec in list(self._multi_sel):
+            if getattr(rec, "orig_rect", None) is None:
+                self._drop_record(rec)
+            else:
+                if rec.kind.startswith("image"):
+                    rec.kind = "image_delete"
+                else:
+                    rec.kind = "text_delete"
+                rec.new_rect = None
+                rec.text = None
+                rec.html = None
+                rec.image_path = None
+                self._rebuild_one(rec)
+        self.clear_multi_selection()
+        self._edit_checkpoint()
+        self.status_changed.emit()
+        return True
+
+    def align_multi(self, mode: str) -> bool:
+        recs = [r for r in self._multi_sel if r.new_rect]
+        if len(recs) < 2:
+            return False
+        xs0 = [r.new_rect[0] for r in recs]
+        ys0 = [r.new_rect[1] for r in recs]
+        xs1 = [r.new_rect[2] for r in recs]
+        ys1 = [r.new_rect[3] for r in recs]
+        L, T, R, B = min(xs0), min(ys0), max(xs1), max(ys1)
+        cx, cy = (L + R) / 2.0, (T + B) / 2.0
+        for r in recs:
+            x0, y0, x1, y1 = r.new_rect
+            w, h = x1 - x0, y1 - y0
+            if mode == "left":
+                x0, x1 = L, L + w
+            elif mode == "right":
+                x0, x1 = R - w, R
+            elif mode == "top":
+                y0, y1 = T, T + h
+            elif mode == "bottom":
+                y0, y1 = B - h, B
+            elif mode == "centerx":
+                x0 = cx - w / 2.0
+                x1 = x0 + w
+            elif mode == "centery":
+                y0 = cy - h / 2.0
+                y1 = y0 + h
+            r.new_rect = (x0, y0, x1, y1)
+            self._rebuild_one(r)
+        self._draw_multi_highlights()
+        self._edit_checkpoint()
+        self.status_changed.emit()
+        return True
+
+    def distribute_multi(self, axis: str) -> bool:
+        """Even out the spacing of the multi-selected objects along
+        *axis* ('h' or 'v').  Outer two stay put; the rest are spaced so
+        the gaps between bounding boxes are equal."""
+        recs = [r for r in self._multi_sel if r.new_rect]
+        if len(recs) < 3:
+            return False
+        i0, i1 = (0, 2) if axis == "h" else (1, 3)
+        recs.sort(key=lambda r: r.new_rect[i0])
+        span = recs[-1].new_rect[i1] - recs[0].new_rect[i0]
+        total = sum(r.new_rect[i1] - r.new_rect[i0] for r in recs)
+        gap = (span - total) / (len(recs) - 1)
+        cursor = recs[0].new_rect[i0]
+        for r in recs:
+            x0, y0, x1, y1 = r.new_rect
+            size = (x1 - x0) if axis == "h" else (y1 - y0)
+            if axis == "h":
+                r.new_rect = (cursor, y0, cursor + size, y1)
+            else:
+                r.new_rect = (x0, cursor, x1, cursor + size)
+            cursor += size + gap
+            self._rebuild_one(r)
+        self._draw_multi_highlights()
+        self._edit_checkpoint()
+        self.status_changed.emit()
+        return True
+
+    def group_multi(self) -> bool:
+        recs = list(self._multi_sel)
+        if len(recs) < 2:
+            return False
+        self._next_group_id += 1
+        gid = self._next_group_id
+        for r in recs:
+            if not isinstance(getattr(r, "extra", None), dict):
+                r.extra = {}
+            r.extra["group"] = gid
+        self._edit_checkpoint()
+        self.status_changed.emit()
+        return True
+
+    def ungroup_multi(self) -> bool:
+        recs = list(self._multi_sel)
+        if not recs:
+            return False
+        changed = False
+        for r in recs:
+            if isinstance(getattr(r, "extra", None), dict) \
+                    and r.extra.pop("group", None) is not None:
+                changed = True
+        if changed:
+            self._edit_checkpoint()
+            self.status_changed.emit()
+        return changed
+
+    def select_group_of(self, record) -> bool:
+        """If *record* is grouped, select the whole group as a
+        multi-selection and return True; else False."""
+        gid = None
+        if isinstance(getattr(record, "extra", None), dict):
+            gid = record.extra.get("group")
+        if gid is None:
+            return False
+        members = [r for r in self._edit_records
+                   if isinstance(getattr(r, "extra", None), dict)
+                   and r.extra.get("group") == gid]
+        if len(members) < 2:
+            return False
+        self.set_multi_selection(members)
+        return True
+
+    # -- E3: snapping & guide lines --------------------------------------
+    def _clear_snap_guides(self):
+        for g in self._snap_guide_items:
+            try:
+                self._scene.removeItem(g)
+            except Exception:
+                pass
+        self._snap_guide_items = []
+
+    def _draw_snap_guides(self, vxs, hys, page_idx):
+        self._clear_snap_guides()
+        from PyQt6.QtWidgets import QGraphicsLineItem as _GLI
+        pw = self._page_widths.get(page_idx, 0.0)
+        ph = self._page_heights.get(page_idx, 0.0)
+        py = self._page_positions.get(page_idx, 0.0)
+        pen = QPen(QColor(0, 200, 255), 0.8, Qt.PenStyle.DashLine)
+        for x in vxs:
+            ln = _GLI(x, py, x, py + ph)
+            ln.setPen(pen)
+            ln.setZValue(210)
+            self._scene.addItem(ln)
+            self._snap_guide_items.append(ln)
+        for y in hys:
+            ln = _GLI(0.0, y, pw, y)
+            ln.setPen(pen)
+            ln.setZValue(210)
+            self._scene.addItem(ln)
+            self._snap_guide_items.append(ln)
+
+    def apply_snap(self, r: QRectF, page_idx: int, exclude) -> QRectF:
+        """Snap the (translated) rect *r* to nearby object edges/centres
+        and the page margins; draw guide lines for the matches.  Returns
+        a possibly-adjusted copy.  Called only for move drags."""
+        if not self._snap_enabled:
+            self._clear_snap_guides()
+            return r
+        thr = 6.0
+        pw = self._page_widths.get(page_idx, 0.0)
+        ph = self._page_heights.get(page_idx, 0.0)
+        py = self._page_positions.get(page_idx, 0.0)
+        vx, hy = [], []
+        if pw and ph:
+            vx += [0.0, pw / 2.0, pw]
+            hy += [py, py + ph / 2.0, py + ph]
+        for rec in self._edit_records:
+            if rec is exclude or rec.page_idx != page_idx:
+                continue
+            b = self._record_scene_bounds(rec)
+            if b is None:
+                continue
+            vx += [b.left(), b.center().x(), b.right()]
+            hy += [b.top(), b.center().y(), b.bottom()]
+        out = QRectF(r)
+        gv, gh = [], []
+        bx = None
+        for val, kind in ((out.left(), "l"), (out.center().x(), "c"),
+                          (out.right(), "r")):
+            for cx in vx:
+                d = abs(val - cx)
+                if d <= thr and (bx is None or d < bx[2]):
+                    bx = (kind, cx, d)
+        if bx is not None:
+            kind, cx, _ = bx
+            if kind == "l":
+                out.moveLeft(cx)
+            elif kind == "r":
+                out.moveRight(cx)
+            else:
+                out.moveCenter(QPointF(cx, out.center().y()))
+            gv.append(cx)
+        by = None
+        for val, kind in ((out.top(), "t"), (out.center().y(), "c"),
+                          (out.bottom(), "b")):
+            for cy in hy:
+                d = abs(val - cy)
+                if d <= thr and (by is None or d < by[2]):
+                    by = (kind, cy, d)
+        if by is not None:
+            kind, cy, _ = by
+            if kind == "t":
+                out.moveTop(cy)
+            elif kind == "b":
+                out.moveBottom(cy)
+            else:
+                out.moveCenter(QPointF(out.center().x(), cy))
+            gh.append(cy)
+        self._draw_snap_guides(gv, gh, page_idx)
+        return out
 
     def _make_cover(self, rec, scene_rect: QRectF, bg, z: float = 9.0):
         """Create + register a background-coloured cover over the
@@ -4184,13 +4875,29 @@ class DocumentTab(QWidget):
             item.setToolTip("Whiteout — content will be removed on save")
             self._register_visual(rec, item, visuals)
 
+        elif kind == "highlight_add":
+            item = QGraphicsRectItem(0, 0, rs.width(), rs.height())
+            item.setPos(rs.x(), rs.y())
+            item.setBrush(QBrush(QColor(255, 235, 60, 90)))
+            item.setPen(QPen(Qt.PenStyle.NoPen))
+            item.setZValue(100)
+            item.setToolTip(
+                "Highlight — saved as a real PDF highlight annotation")
+            self._register_visual(rec, item, visuals)
+
         elif kind == "shape_add":
             r, g, b = rec.stroke_color or (0, 0, 0)
             pen = QPen(QColor(r, g, b), rec.stroke_width or 2.0)
+            sstyle = getattr(rec, "stroke_style", "solid")
+            if sstyle == "dash":
+                pen.setStyle(Qt.PenStyle.DashLine)
+            elif sstyle == "dot":
+                pen.setStyle(Qt.PenStyle.DotLine)
             brush = QBrush(Qt.GlobalColor.transparent)
             if rec.fill_color:
                 fr, fg, fb = rec.fill_color
-                brush = QBrush(QColor(fr, fg, fb, 80))
+                fa = max(0, min(255, getattr(rec, "fill_opacity", 80)))
+                brush = QBrush(QColor(fr, fg, fb, fa))
             st = rec.shape_type
             if st == "rect":
                 item = QGraphicsRectItem(0, 0, rs.width(), rs.height())
@@ -4212,15 +4919,21 @@ class DocumentTab(QWidget):
                 item.setPen(pen)
                 if st == "arrow":
                     import math
-                    ang = math.atan2(sy1 - sy0, sx1 - sx0)
                     hl = min(15, (rec.stroke_width or 2.0) * 5)
-                    for da in (math.pi * 0.85, -math.pi * 0.85):
-                        h = _GLI(sx1, sy1,
-                                 sx1 + hl * math.cos(ang + da),
-                                 sy1 + hl * math.sin(ang + da))
-                        h.setPen(pen)
-                        h.setZValue(100)
-                        self._register_visual(rec, h, visuals)
+                    heads = [(sx1, sy1,
+                              math.atan2(sy1 - sy0, sx1 - sx0))]
+                    if getattr(rec, "arrow_both", False):
+                        heads.append(
+                            (sx0, sy0,
+                             math.atan2(sy0 - sy1, sx0 - sx1)))
+                    for hx, hy, ang in heads:
+                        for da in (math.pi * 0.85, -math.pi * 0.85):
+                            h = _GLI(hx, hy,
+                                     hx + hl * math.cos(ang + da),
+                                     hy + hl * math.sin(ang + da))
+                            h.setPen(pen)
+                            h.setZValue(100)
+                            self._register_visual(rec, h, visuals)
             else:
                 item = QGraphicsRectItem(0, 0, rs.width(), rs.height())
                 item.setPos(rs.x(), rs.y())
@@ -4327,8 +5040,8 @@ class DocumentTab(QWidget):
             self._drag_rubber = None
         self._drag_start = None
         self._edit_action = action
-        drag_tools = ("redact", "shape_rect", "shape_circle",
-                      "shape_line", "shape_arrow")
+        drag_tools = ("redact", "highlight", "multiselect", "shape_rect",
+                      "shape_circle", "shape_line", "shape_arrow")
         click_tools = ("add_text", "add_image", "stamp", "note")
         if action in click_tools or action in drag_tools:
             self._view.setCursor(_get_edit_cursor(action))
@@ -4356,8 +5069,8 @@ class DocumentTab(QWidget):
         if self._edit_action == "note":
             self._add_note_at(scene_pos)
             return True
-        if self._edit_action == "redact":
-            # Redact uses drag — start point recorded here
+        if self._edit_action in ("redact", "highlight", "multiselect"):
+            # Redact / highlight / select use drag — record the start
             self._drag_start = scene_pos
             return True
         if self._edit_action and self._edit_action.startswith("shape_"):
@@ -4415,6 +5128,24 @@ class DocumentTab(QWidget):
         self._edit_checkpoint()
         self.status_changed.emit()
 
+    def add_note_on_current_page(self, text: str) -> int:
+        """Add a sticky note near the top-left of the currently visible
+        page (used by the Notes panel's Add Note button — no click
+        needed).  Returns the 0-based page index, or -1 on failure."""
+        if not text or not self._num_pages:
+            return -1
+        page_idx = self.get_visible_page() if self._num_pages else 0
+        page_top = self._page_positions.get(page_idx, 0.0)
+        anchor = QRectF(36.0, page_top + 36.0, 24.0, 24.0)
+        new_rect = self._scene_rect_to_pt(page_idx, anchor)
+        rec = EditRecord(kind="note_add", page_idx=page_idx,
+                         new_rect=new_rect, text=text)
+        self._edit_records.append(rec)
+        self._materialize_record(rec)
+        self._edit_checkpoint()
+        self.status_changed.emit()
+        return page_idx
+
     # -- Shape / Redact drag support -----------------------------------------
     def handle_edit_drag_release(self, scene_pos: QPointF) -> bool:
         """Called from PDFGraphicsView on mouse-release after a drag
@@ -4427,6 +5158,29 @@ class DocumentTab(QWidget):
         if page_idx is None:
             return False
 
+        # Shift-constrain: perfect square/circle, or 45°-snapped line.
+        act = self._edit_action or ""
+        if act.startswith("shape_"):
+            from PyQt6.QtWidgets import QApplication
+            if (QApplication.keyboardModifiers()
+                    & Qt.KeyboardModifier.ShiftModifier):
+                stype = act.replace("shape_", "")
+                dx = scene_pos.x() - start.x()
+                dy = scene_pos.y() - start.y()
+                if stype in ("rect", "circle"):
+                    side = max(abs(dx), abs(dy))
+                    scene_pos = QPointF(
+                        start.x() + (side if dx >= 0 else -side),
+                        start.y() + (side if dy >= 0 else -side))
+                elif stype in ("line", "arrow"):
+                    import math
+                    length = math.hypot(dx, dy)
+                    step = math.pi / 4
+                    snapped = round(math.atan2(dy, dx) / step) * step
+                    scene_pos = QPointF(
+                        start.x() + length * math.cos(snapped),
+                        start.y() + length * math.sin(snapped))
+
         x0, y0 = min(start.x(), scene_pos.x()), min(start.y(), scene_pos.y())
         x1, y1 = max(start.x(), scene_pos.x()), max(start.y(), scene_pos.y())
         # Minimum size guard
@@ -4435,9 +5189,23 @@ class DocumentTab(QWidget):
         rect_scene = QRectF(x0, y0, x1 - x0, y1 - y0)
         new_rect = self._scene_rect_to_pt(page_idx, rect_scene)
 
+        if self._edit_action == "multiselect":
+            self.multiselect_from_band(rect_scene)
+            return True
+
         if self._edit_action == "redact":
             rec = EditRecord(
                 kind="redact_add", page_idx=page_idx,
+                new_rect=new_rect)
+            self._edit_records.append(rec)
+            self._materialize_record(rec)
+            self._edit_checkpoint()
+            self.status_changed.emit()
+            return True
+
+        if self._edit_action == "highlight":
+            rec = EditRecord(
+                kind="highlight_add", page_idx=page_idx,
                 new_rect=new_rect)
             self._edit_records.append(rec)
             self._materialize_record(rec)
@@ -4784,6 +5552,10 @@ class DocumentTab(QWidget):
                 continue
             if br.contains(scene_pos):
                 record = self._item_to_record[it]
+                # Grouped object → select the whole group instead of a
+                # single-object transform (move/align/delete together).
+                if self.select_group_of(record):
+                    return True
                 # Gather ALL visuals for this record so they move as
                 # a group and Delete removes them all.
                 all_vis = self._record_visuals.get(id(record), [it])
@@ -6035,8 +6807,10 @@ class DocumentTab(QWidget):
             "Open the edited file in a new tab?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
-        # Clear the record queue now that it has been flushed to disk.
+        # Clear the record queue now that it has been flushed to disk,
+        # and drop the crash-recovery journal (edits are now saved).
         self._edit_records.clear()
+        self._clear_recovery()
         # Tidy up the live preview items — the saved file now contains
         # the real edits, and leaving phantom previews on the source
         # tab is misleading.
@@ -7980,9 +8754,29 @@ class _ClickableThumb(QLabel):
 # ---------------------------------------------------------------------------
 # Notes Panel — right-side panel listing PDF annotations for the current page
 # ---------------------------------------------------------------------------
+class _ClickableCard(QFrame):
+    """A note card that emits *clicked* with its 0-based page index so
+    the Notes panel can jump the main view to that page."""
+    clicked = pyqtSignal(int)
+
+    def __init__(self, page_index: int, parent=None):
+        super().__init__(parent)
+        self._page_index = page_index
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self._page_index)
+        super().mousePressEvent(ev)
+
+
 class NotesPanel(QWidget):
     """Right-side panel that lists all comment annotations on the currently
-    visible page.  Automatically updates as the user scrolls."""
+    visible page.  Automatically updates as the user scrolls.  Clicking a
+    note jumps the main document to that note's page."""
+
+    note_clicked = pyqtSignal(int)       # 0-based page index
+    add_note_requested = pyqtSignal()    # user wants to add a note
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -8001,6 +8795,18 @@ class NotesPanel(QWidget):
             " font-weight: bold; font-size: 14px;"
             " padding: 8px; border-bottom: 1px solid #444; }")
         root_layout.addWidget(self._header)
+
+        # Add Note button
+        self._add_btn = QPushButton("+ Add Note")
+        self._add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._add_btn.setStyleSheet(
+            "QPushButton { background: #3a6ea5; color: #fff;"
+            " border: none; padding: 7px; font-weight: bold;"
+            " font-size: 13px; }"
+            " QPushButton:hover { background: #4a82c0; }")
+        self._add_btn.clicked.connect(
+            lambda: self.add_note_requested.emit())
+        root_layout.addWidget(self._add_btn)
 
         # Scrollable area for note cards
         self._scroll = QScrollArea()
@@ -8098,7 +8904,8 @@ class NotesPanel(QWidget):
 
             page_cards = []
             for note in notes:
-                card = QFrame()
+                card = _ClickableCard(page_idx)
+                card.clicked.connect(self.note_clicked)
                 card.setFrameShape(QFrame.Shape.StyledPanel)
                 base = (
                     "QFrame { background: #fffde7;"
@@ -8550,7 +9357,7 @@ class PropertiesPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         from PyQt6.QtWidgets import (QDoubleSpinBox, QFormLayout,
-                                     QCheckBox)
+                                     QCheckBox, QComboBox)
         self._tab = None
         self._record = None
         self._loading = False
@@ -8610,6 +9417,15 @@ class PropertiesPanel(QWidget):
         self._chk_nofill = QCheckBox("No fill")
         self._chk_nofill.stateChanged.connect(self._schedule_apply)
         form.addRow("", self._chk_nofill)
+        self._sfopac = _spin(0, 255, 5, 0)
+        form.addRow("Fill opacity", self._sfopac)
+        self._cmb_style = QComboBox()
+        self._cmb_style.addItems(["Solid", "Dash", "Dot"])
+        self._cmb_style.currentIndexChanged.connect(self._schedule_apply)
+        form.addRow("Stroke style", self._cmb_style)
+        self._chk_arrowboth = QCheckBox("Arrow both ends")
+        self._chk_arrowboth.stateChanged.connect(self._schedule_apply)
+        form.addRow("", self._chk_arrowboth)
         outer.addWidget(self._form_host)
         outer.addStretch(1)
 
@@ -8659,6 +9475,16 @@ class PropertiesPanel(QWidget):
             self._chk_nofill.setEnabled(is_shape)
             self._chk_nofill.setChecked(
                 is_shape and not rec.fill_color)
+            self._sfopac.setValue(getattr(rec, "fill_opacity", 80))
+            self._sfopac.setEnabled(is_shape)
+            sty = getattr(rec, "stroke_style", "solid")
+            self._cmb_style.setCurrentIndex(
+                {"solid": 0, "dash": 1, "dot": 2}.get(sty, 0))
+            self._cmb_style.setEnabled(is_shape)
+            is_arrow = (is_shape and shape == "arrow")
+            self._chk_arrowboth.setChecked(
+                is_arrow and bool(getattr(rec, "arrow_both", False)))
+            self._chk_arrowboth.setEnabled(is_arrow)
         finally:
             self._loading = False
 
@@ -8709,6 +9535,13 @@ class PropertiesPanel(QWidget):
             if (self._chk_nofill.isEnabled()
                     and self._chk_nofill.isChecked()):
                 rec.fill_color = None
+            if self._sfopac.isEnabled():
+                rec.fill_opacity = int(self._sfopac.value())
+            if self._cmb_style.isEnabled():
+                rec.stroke_style = ("solid", "dash", "dot")[
+                    self._cmb_style.currentIndex()]
+            if self._chk_arrowboth.isEnabled():
+                rec.arrow_both = self._chk_arrowboth.isChecked()
         except Exception as e:
             print(f"[BoltPDF] property apply failed: {e}",
                   file=sys.stderr)
@@ -8830,6 +9663,11 @@ class _AppState:
         self._save()
 
 
+# App-wide clipboard for copy/paste/duplicate of edit objects across
+# tabs and pages.  Holds a deep-copied EditRecord (or None).
+_EDIT_CLIPBOARD = None
+
+
 _APP_STATE: "_AppState | None" = None
 
 
@@ -8869,16 +9707,15 @@ class BoltPDFReader(QMainWindow):
         # Ad banner at the bottom
         self._ad_banner = AdBanner(self)
 
-        # Preview panel (left sidebar, hidden until a _preview.pdf is found)
-        self._preview_panel = PreviewPanel(self)
-        self._preview_panel.setVisible(False)
-        self._preview_panel.page_clicked.connect(self._on_preview_page_clicked)
-
-        # Notes panel (right sidebar, hidden until annotations are found)
+        # Notes panel (right sidebar, hidden until annotations are found).
+        # Clicking a note jumps the main view to that note's page.
         self._notes_panel = NotesPanel(self)
         self._notes_panel.setVisible(False)
+        self._notes_panel.note_clicked.connect(self._on_note_clicked)
+        self._notes_panel.add_note_requested.connect(
+            self._on_add_note_requested)
 
-        # Splitter: preview panel | tab area | notes panel
+        # Splitter: thumbnails | tab area | notes | properties
         self._splitter = QSplitter(Qt.Orientation.Horizontal, self)
         self._splitter.setChildrenCollapsible(False)
 
@@ -8902,18 +9739,16 @@ class BoltPDFReader(QMainWindow):
         self._props_panel.setVisible(False)
 
         self._splitter.addWidget(self._thumb_panel)
-        self._splitter.addWidget(self._preview_panel)
         self._splitter.addWidget(centre)
         self._splitter.addWidget(self._notes_panel)
         self._splitter.addWidget(self._props_panel)
-        # Initial widths: thumbnails | preview | tabs | notes | props
-        self._splitter.setSizes([170, 180, 760, 250, 210])
+        # Initial widths: thumbnails | tabs | notes | props
+        self._splitter.setSizes([170, 800, 250, 210])
 
         self.setCentralWidget(self._splitter)
 
         self._build_toolbar()
         self._is_fullscreen = False
-        self._preview_visible_before_fs = False
         self._edit_tb_visible_before_fs = False
         self._notes_visible_before_fs = False
 
@@ -8956,6 +9791,10 @@ class BoltPDFReader(QMainWindow):
         name = os.path.basename(path)
         idx = self._tabs.addTab(tab, name)
         self._tabs.setCurrentIndex(idx)
+        # Build the initial layout in the saved reading mode (spread
+        # is decided inside load_pdf from tab._reading_mode).
+        tab._reading_mode = app_state().pref(
+            "reading_mode", "continuous")
         tab.load_pdf(path)
         app_state().add_recent(path)
         tab.set_tint(app_state().pref("display_tint", "none"))
@@ -8965,8 +9804,6 @@ class BoltPDFReader(QMainWindow):
                 120, lambda t=tab: self._apply_reading_mode(t))
         self._update_tab_bar_visibility()
         self._sync_toolbar()
-        # Check for a preview file and load it into the sidebar
-        self._load_preview_for_tab(tab)
         # Show notes panel if the document has annotations
         self._show_notes_panel_for_tab(tab)
         # Connect scroll events to update the notes panel as the user
@@ -9150,12 +9987,6 @@ class BoltPDFReader(QMainWindow):
         self._act_export_pages.setEnabled(False)
         tb.addAction(self._act_export_pages)
 
-        self._act_preview = QAction("Generate Preview", self)
-        self._act_preview.setToolTip(
-            "Create a lightweight preview PDF with low-res page snapshots")
-        self._act_preview.triggered.connect(self._generate_preview)
-        self._act_preview.setEnabled(False)
-        tb.addAction(self._act_preview)
 
         self._act_notes = QAction("Notes", self)
         self._act_notes.setToolTip(
@@ -9239,6 +10070,60 @@ class BoltPDFReader(QMainWindow):
         self._act_edit_transform.triggered.connect(self._edit_transform)
         etb.addAction(self._act_edit_transform)
 
+        self._act_edit_select = QAction("Select", self)
+        self._act_edit_select.setToolTip(
+            "Rubber-band multi-select: drag a box over objects, then "
+            "Align / nudge with arrows / Delete them together.")
+        self._act_edit_select.setCheckable(True)
+        self._act_edit_select.triggered.connect(self._edit_multiselect)
+        etb.addAction(self._act_edit_select)
+
+        from PyQt6.QtWidgets import QToolButton as _QTB, QMenu as _QM
+        self._act_edit_align_btn = _QTB(self)
+        self._act_edit_align_btn.setText("Align")
+        self._act_edit_align_btn.setToolTip(
+            "Align the multi-selected objects")
+        self._act_edit_align_btn.setPopupMode(
+            _QTB.ToolButtonPopupMode.InstantPopup)
+        _amenu = _QM(self._act_edit_align_btn)
+        for _label, _mode in (("Left", "left"), ("Right", "right"),
+                              ("Top", "top"), ("Bottom", "bottom"),
+                              ("Center H", "centerx"),
+                              ("Center V", "centery")):
+            _aa = _amenu.addAction(_label)
+            _aa.triggered.connect(
+                lambda _c=False, m=_mode: self._edit_align(m))
+        _amenu.addSeparator()
+        for _label, _ax in (("Distribute horizontally", "h"),
+                            ("Distribute vertically", "v")):
+            _da = _amenu.addAction(_label)
+            _da.triggered.connect(
+                lambda _c=False, a=_ax: self._edit_distribute(a))
+        self._act_edit_align_btn.setMenu(_amenu)
+        etb.addWidget(self._act_edit_align_btn)
+
+        self._act_edit_group = QAction("Group", self)
+        self._act_edit_group.setToolTip(
+            "Group the multi-selected objects so they select & move "
+            "together (Transform-click any member to select the group)")
+        self._act_edit_group.triggered.connect(self._edit_group)
+        etb.addAction(self._act_edit_group)
+
+        self._act_edit_ungroup = QAction("Ungroup", self)
+        self._act_edit_ungroup.setToolTip(
+            "Ungroup the selected group")
+        self._act_edit_ungroup.triggered.connect(self._edit_ungroup)
+        etb.addAction(self._act_edit_ungroup)
+
+        self._act_edit_snap = QAction("Snap", self)
+        self._act_edit_snap.setCheckable(True)
+        self._act_edit_snap.setChecked(True)
+        self._act_edit_snap.setToolTip(
+            "Snap a moved object to other objects' edges/centres and "
+            "the page margins, with live guide lines")
+        self._act_edit_snap.toggled.connect(self._edit_toggle_snap)
+        etb.addAction(self._act_edit_snap)
+
         self._act_edit_delete = QAction("Delete", self)
         self._act_edit_delete.setToolTip(
             "Delete the currently selected text box or image from the "
@@ -9247,6 +10132,14 @@ class BoltPDFReader(QMainWindow):
             "it.  The change is written when you hit Save As.")
         self._act_edit_delete.triggered.connect(self._edit_delete_selection)
         etb.addAction(self._act_edit_delete)
+
+        self._act_edit_duplicate = QAction("Duplicate", self)
+        self._act_edit_duplicate.setToolTip(
+            "Duplicate the selected object (Ctrl+D). Ctrl+C/Ctrl+V "
+            "copy/paste — paste lands on the page you're viewing.")
+        self._act_edit_duplicate.triggered.connect(
+            self._edit_duplicate)
+        etb.addAction(self._act_edit_duplicate)
 
         self._act_edit_replace_img = QAction("Replace Image", self)
         self._act_edit_replace_img.setToolTip(
@@ -9297,6 +10190,13 @@ class BoltPDFReader(QMainWindow):
         self._act_edit_redact.setCheckable(True)
         self._act_edit_redact.triggered.connect(self._edit_redact)
         etb.addAction(self._act_edit_redact)
+
+        self._act_edit_highlight = QAction("Highlight", self)
+        self._act_edit_highlight.setToolTip(
+            "Drag over content to add a real PDF highlight annotation")
+        self._act_edit_highlight.setCheckable(True)
+        self._act_edit_highlight.triggered.connect(self._edit_highlight)
+        etb.addAction(self._act_edit_highlight)
 
         self._act_edit_note = QAction("Sticky Note", self)
         self._act_edit_note.setToolTip(
@@ -9473,7 +10373,6 @@ class BoltPDFReader(QMainWindow):
             self._act_export.setText("Export Images")
             self._act_export_sel.setVisible(False)
             self._act_export_pages.setEnabled(False)
-            self._act_preview.setEnabled(False)
             self._act_edit.setEnabled(False)
             self._act_edit.setChecked(False)
             self._edit_toolbar.setVisible(False)
@@ -9517,7 +10416,6 @@ class BoltPDFReader(QMainWindow):
         self._act_word.setEnabled(has_doc)
         self._act_export.setEnabled(has_doc)
         self._act_export_pages.setEnabled(has_doc)
-        self._act_preview.setEnabled(has_doc)
         self._act_notes.setEnabled(has_doc)
         if tab.image_select_mode:
             self._act_export.setText("Cancel Export")
@@ -9548,6 +10446,8 @@ class BoltPDFReader(QMainWindow):
             self._act_edit_shape_line.setChecked(ea == 'shape_line')
             self._act_edit_shape_arrow.setChecked(ea == 'shape_arrow')
             self._act_edit_redact.setChecked(ea == 'redact')
+            self._act_edit_highlight.setChecked(ea == 'highlight')
+            self._act_edit_select.setChecked(ea == 'multiselect')
             self._act_edit_note.setChecked(ea == 'note')
             # Delete is only meaningful when something is actually
             # selected by the Transform tool.
@@ -9898,12 +10798,9 @@ class BoltPDFReader(QMainWindow):
         # Update preview panel for the newly active tab
         tab = self._tabs.widget(index) if index >= 0 else None
         if isinstance(tab, DocumentTab):
-            self._load_preview_for_tab(tab)
             self._show_notes_panel_for_tab(tab)
             self._refresh_thumbs()
         else:
-            self._preview_panel.clear()
-            self._preview_panel.setVisible(False)
             self._notes_panel.clear()
             self._notes_panel.setVisible(False)
             if self._thumb_panel.isVisible():
@@ -9917,14 +10814,11 @@ class BoltPDFReader(QMainWindow):
         self._tabs.removeTab(index)
         self._update_tab_bar_visibility()
         self._sync_toolbar()
-        # Refresh preview panel for whatever tab is now active
+        # Refresh side panels for whatever tab is now active
         new_tab = self._current_tab()
         if new_tab:
-            self._load_preview_for_tab(new_tab)
             self._show_notes_panel_for_tab(new_tab)
         else:
-            self._preview_panel.clear()
-            self._preview_panel.setVisible(False)
             self._notes_panel.clear()
             self._notes_panel.setVisible(False)
 
@@ -9953,6 +10847,13 @@ class BoltPDFReader(QMainWindow):
                         "zoom": t.current_zoom(),
                     })
             app_state().set_session(entries)
+        except Exception:
+            pass
+
+        # 0a. Mark a clean shutdown so the next plain launch opens
+        #     blank (a crash leaves this False → recover instead).
+        try:
+            app_state().set_pref("clean_exit", True)
         except Exception:
             pass
 
@@ -10164,35 +11065,101 @@ class BoltPDFReader(QMainWindow):
             tab.goto_page(idx)
             self._thumb_panel.highlight(idx)
 
+    def _on_note_clicked(self, page_idx: int):
+        """Jump the main document to the page of the clicked note."""
+        tab = self._current_tab()
+        if tab is not None:
+            tab.goto_page(page_idx)
+
+    def _on_add_note_requested(self):
+        """Add Note button in the Notes panel: prompt for text and drop
+        a sticky note on the current page (no click needed).  It shows
+        in the list immediately and is written on Save As."""
+        tab = self._current_tab()
+        if tab is None or not tab.doc_path:
+            QMessageBox.information(
+                self, "Add Note", "Open a PDF first.")
+            return
+        text, ok = QInputDialog.getMultiLineText(
+            self, "Add Note", "Note text:", "")
+        if not ok or not text.strip():
+            return
+        page_idx = tab.add_note_on_current_page(text)
+        if page_idx < 0:
+            return
+        tab.goto_page(page_idx)
+        # Refresh the panel so the new note appears right away.
+        self._notes_panel.clear()
+        self._update_notes_panel(tab)
+        self._sync_toolbar()
+
     # -- Reading layout ---------------------------------------------------
     def _populate_layout_menu(self):
         m = self._layout_menu
         m.clear()
         cur = app_state().pref("reading_mode", "continuous")
         for key, text in (("continuous", "Continuous scroll"),
-                          ("single", "Single page")):
+                          ("single", "Single page"),
+                          ("spread", "Two-page spread")):
             act = m.addAction(text)
             act.setCheckable(True)
             act.setChecked(key == cur)
             act.triggered.connect(
                 lambda _c=False, k=key: self._set_reading_mode(k))
-        m.addSeparator()
-        soon = m.addAction("Two-page spread — planned (separate update)")
-        soon.setEnabled(False)
 
     def _set_reading_mode(self, mode: str):
-        mode = "single" if mode == "single" else "continuous"
-        app_state().set_pref("reading_mode", mode)
+        if mode not in ("continuous", "single", "spread"):
+            mode = "continuous"
+        prev = app_state().pref("reading_mode", "continuous")
+        if mode == prev:
+            return
         tab = self._current_tab()
-        if tab is not None:
+        # Toggling spread changes the actual page layout, so the
+        # cleanest + safest path is a full document reload — every
+        # overlay subsystem rebuilds through the normal (now X-origin
+        # aware) code paths instead of being repositioned in place.
+        need_reload = ("spread" in (mode, prev)
+                       and tab is not None and tab.doc_path)
+        if (need_reload and getattr(tab, "_edit_records", None)):
+            ans = QMessageBox.question(
+                self, "Change layout?",
+                "Switching to/from two-page spread reloads the "
+                "document and will discard unsaved edits in this "
+                "tab.\n\nContinue?",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if ans != QMessageBox.StandardButton.Yes:
+                return
+        app_state().set_pref("reading_mode", mode)
+        if tab is None:
+            return
+        tab._reading_mode = mode
+        if need_reload:
+            page = tab.current_page_index()
+            # The reload intentionally drops pending edits; clear the
+            # crash-recovery journal too, otherwise load_pdf's recovery
+            # prompt would offer to restore what we just discarded.
+            try:
+                tab._clear_recovery()
+            except Exception:
+                pass
+            tab.load_pdf(tab.doc_path)
+            QTimer.singleShot(
+                160,
+                lambda t=tab, p=page: (t.goto_page(p),
+                                       self._apply_reading_mode(t)))
+        else:
             self._apply_reading_mode(tab)
 
     def _apply_reading_mode(self, tab):
-        """Continuous = normal scroll; Single = the existing, proven
-        fit-one-page-at-a-time engine.  No new coordinate math, so OCR /
-        search / edit overlays are unaffected."""
-        single = (app_state().pref("reading_mode", "continuous")
-                  == "single")
+        """Single = the proven fit-one-page engine; continuous & spread
+        = normal scrolling (spread's side-by-side layout is built in
+        load_pdf and flows through _pt_to_scene, so OCR / search / edit
+        overlays need no special-casing)."""
+        mode = app_state().pref("reading_mode", "continuous")
+        tab._reading_mode = mode
+        single = (mode == "single")
         try:
             tab.set_fit_mode(single)
         except Exception:
@@ -10225,6 +11192,42 @@ class BoltPDFReader(QMainWindow):
             QTimer.singleShot(
                 150, lambda t=tab, p=page, z=zoom: t.goto_page(p, z))
 
+    def reopen_crashed_docs(self):
+        """Open only the PDF(s) that still had unsaved edits when the
+        app last exited abnormally (crash), so the user can recover
+        them.  A normal launch otherwise starts with no document open.
+        Opening each doc triggers load_pdf's own recovery prompt."""
+        try:
+            base = os.path.join(
+                os.environ.get("LOCALAPPDATA", tempfile.gettempdir()),
+                "BoltPDF", "recovery")
+            if not os.path.isdir(base):
+                return
+            seen, opened = set(), 0
+            for name in sorted(os.listdir(base)):
+                if not name.endswith(".json"):
+                    continue
+                try:
+                    with open(os.path.join(base, name), "r",
+                              encoding="utf-8") as fh:
+                        payload = json.load(fh)
+                except (OSError, ValueError):
+                    continue
+                doc = payload.get("doc")
+                recs = payload.get("records") or []
+                if not doc or not recs or not os.path.isfile(doc):
+                    continue
+                key = os.path.normcase(os.path.abspath(doc))
+                if key in seen:
+                    continue
+                seen.add(key)
+                self.open_pdf_in_new_tab(doc)
+                opened += 1
+                if opened >= 5:        # safety cap
+                    break
+        except Exception:
+            pass
+
     # -- Toolbar action delegates -----------------------------------------
     def _zoom_in(self):
         tab = self._current_tab()
@@ -10245,9 +11248,6 @@ class BoltPDFReader(QMainWindow):
     def _toggle_fullscreen(self):
         if self._is_fullscreen:
             self.showNormal()
-            # Restore preview panel if it was visible before fullscreen
-            if self._preview_visible_before_fs:
-                self._preview_panel.setVisible(True)
             # Restore edit toolbar if it was visible before fullscreen
             if self._edit_tb_visible_before_fs:
                 self._edit_toolbar.setVisible(True)
@@ -10256,8 +11256,6 @@ class BoltPDFReader(QMainWindow):
                 self._notes_panel.setVisible(True)
         else:
             # Remember whether panels were showing
-            self._preview_visible_before_fs = self._preview_panel.isVisible()
-            self._preview_panel.setVisible(False)
             self._edit_tb_visible_before_fs = self._edit_toolbar.isVisible()
             self._edit_toolbar.setVisible(False)
             self._notes_visible_before_fs = self._notes_panel.isVisible()
@@ -10468,125 +11466,42 @@ class BoltPDFReader(QMainWindow):
         QMessageBox.critical(
             self, "Export Error", f"Failed to export pages:\n{msg}")
 
-    # -- Generate Preview --------------------------------------------------
-    def _generate_preview(self):
-        """Render every page at 1/8th screen width (72 DPI) and save as
-        a lightweight preview PDF next to the original."""
-        tab = self._current_tab()
-        if not tab or not tab.doc_path:
-            return
-
-        # Target width = 1/8th of the primary screen width in points
-        screen = self.screen() or QApplication.primaryScreen()
-        screen_w = screen.size().width() if screen else 1920
-        target_width = max(screen_w // 8, 120)  # floor at 120px
-
-        pdf_dir = os.path.dirname(tab.doc_path)
-        stem = os.path.splitext(os.path.basename(tab.doc_path))[0]
-        out_path = os.path.join(pdf_dir, f"{stem}_preview.pdf")
-
-        self._preview_progress = QProgressDialog(
-            f"Generating preview ({target_width}px wide)...",
-            "Cancel", 0, 100, self)
-        self._preview_progress.setWindowTitle("Generate Preview")
-        self._preview_progress.setMinimumDuration(0)
-        self._preview_progress.setValue(0)
-
-        self._preview_worker = PreviewWorker(
-            tab.doc_path, out_path, target_width, parent=self)
-        self._preview_worker.progress.connect(
-            self._preview_progress.setValue)
-        self._preview_worker.finished_ok.connect(
-            self._on_preview_done)
-        self._preview_worker.error_occurred.connect(
-            self._on_preview_error)
-        self._preview_progress.canceled.connect(
-            self._preview_worker.cancel)
-        self._preview_worker.start()
-
-    def _on_preview_done(self, file_path):
-        self._preview_progress.close()
-        QMessageBox.information(
-            self, "Preview Generated",
-            f"Preview saved to:\n{file_path}")
-        # Immediately load the new preview into the sidebar
-        tab = self._current_tab()
-        if tab:
-            self._load_preview_for_tab(tab)
-
-    def _on_preview_error(self, msg):
-        self._preview_progress.close()
-        QMessageBox.critical(
-            self, "Preview Error", f"Failed to generate preview:\n{msg}")
-
-    # -- Preview sidebar ---------------------------------------------------
-    def _load_preview_for_tab(self, tab: DocumentTab):
-        """If a *_preview.pdf* exists next to the tab's document, load it
-        into the left preview sidebar.  Otherwise hide the sidebar."""
-        self._preview_panel.clear()
-        if not tab or not tab.doc_path:
-            self._preview_panel.setVisible(False)
-            return
-        stem = os.path.splitext(tab.doc_path)[0]
-        preview_path = f"{stem}_preview.pdf"
-        if not os.path.isfile(preview_path):
-            self._preview_panel.setVisible(False)
-            ans = QMessageBox.question(
-                self, "No Preview Found",
-                "No preview file was found for this document.\n"
-                "Would you like to generate one now?",
-                QMessageBox.StandardButton.Yes
-                | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes)
-            if ans == QMessageBox.StandardButton.Yes:
-                self._generate_preview()
-            return
-        # Use the first page's height to calculate thumbnail sizing
-        try:
-            import fitz
-            doc = fitz.open(tab.doc_path)
-            page_h = doc[0].rect.height if len(doc) > 0 else 792
-            doc.close()
-        except Exception:
-            page_h = 792  # fallback to US Letter height
-        self._preview_panel.load_preview(preview_path, page_h)
-        self._preview_panel.setVisible(True)
-
-    def _on_preview_page_clicked(self, page_idx: int):
-        """Jump the main document to the clicked preview page."""
-        tab = self._current_tab()
-        if tab is None or not tab._page_positions:
-            return
-        if page_idx < 0 or page_idx >= tab.num_pages:
-            return
-        if page_idx in tab._page_positions:
-            y = tab._page_positions[page_idx]
-            # Map the page-top scene coordinate to view coordinates
-            # and set the vertical scrollbar so the top of the page
-            # aligns with the top of the viewport (not the centre).
-            view_pt = tab.view.mapFromScene(0, y)
-            vsb = tab.view.verticalScrollBar()
-            vsb.setValue(vsb.value() + view_pt.y())
-
     # -- Edit Mode ---------------------------------------------------------
     def _toggle_edit_mode(self):
         tab = self._current_tab()
         if not tab:
             return
         if tab.edit_mode:
-            # If there are unsaved edits, ask before discarding.
+            # Exiting with pending edits: keep them in this session
+            # (preview stays visible, Save As still available) unless
+            # the user explicitly discards.
             dirty = bool(getattr(tab, '_edit_records', None))
             if dirty:
-                ans = QMessageBox.question(
-                    self, "Discard edits?",
-                    "You have unsaved edits. Exit edit mode and discard them?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No)
-                if ans != QMessageBox.StandardButton.Yes:
-                    # Keep edit mode on — re-check the button.
+                mb = QMessageBox(self)
+                mb.setWindowTitle("Exit edit mode")
+                mb.setIcon(QMessageBox.Icon.Question)
+                mb.setText(
+                    "Keep your edits for this session?\n\n"
+                    "Keep — leave edit mode but keep the changes "
+                    "visible (you can still Save As later; they're "
+                    "dropped only when the file is closed).\n"
+                    "Discard — throw the edits away now.")
+                keep_btn = mb.addButton(
+                    "Keep", QMessageBox.ButtonRole.AcceptRole)
+                disc_btn = mb.addButton(
+                    "Discard", QMessageBox.ButtonRole.DestructiveRole)
+                cancel_btn = mb.addButton(
+                    "Cancel", QMessageBox.ButtonRole.RejectRole)
+                mb.setDefaultButton(keep_btn)
+                mb.exec()
+                clicked = mb.clickedButton()
+                if clicked is cancel_btn or clicked is None:
                     self._act_edit.setChecked(True)
                     return
-            tab.exit_edit_mode(discard_edits=True)
+                tab.exit_edit_mode(
+                    discard_edits=(clicked is disc_btn))
+            else:
+                tab.exit_edit_mode(discard_edits=False)
         else:
             # Show a one-time beta notice the first time the user
             # enters edit mode in this session.
@@ -10650,6 +11565,86 @@ class BoltPDFReader(QMainWindow):
         self._props_panel.setVisible(checked)
         if checked:
             self._props_panel.refresh(self._current_tab())
+
+    def _edit_duplicate(self):
+        """Duplicate the Transform-selected object (Ctrl+D)."""
+        tab = self._current_tab()
+        if not tab or not tab.edit_mode:
+            return
+        if not tab.duplicate_selected_edit():
+            QMessageBox.information(
+                self, "Duplicate",
+                "Select an object with the Transform tool first, "
+                "then Duplicate (Ctrl+D).")
+            return
+        self._sync_toolbar()
+
+    def _edit_multiselect(self):
+        """Arm the rubber-band multi-select tool."""
+        tab = self._current_tab()
+        if not tab or not tab.edit_mode:
+            return
+        if tab.edit_action == 'multiselect':
+            tab.set_edit_action(None)
+            tab.clear_multi_selection()
+        else:
+            tab.set_edit_action('multiselect')
+        self._sync_toolbar()
+
+    def _edit_toggle_snap(self, checked: bool):
+        tab = self._current_tab()
+        if tab is not None:
+            tab._snap_enabled = bool(checked)
+            if not checked:
+                tab._clear_snap_guides()
+
+    def _edit_align(self, mode: str):
+        tab = self._current_tab()
+        if not tab or not tab.edit_mode:
+            return
+        if not tab.align_multi(mode):
+            QMessageBox.information(
+                self, "Align",
+                "Use the Select tool to rubber-band at least two "
+                "objects first, then choose an Align option.")
+            return
+        self._sync_toolbar()
+
+    def _edit_distribute(self, axis: str):
+        tab = self._current_tab()
+        if not tab or not tab.edit_mode:
+            return
+        if not tab.distribute_multi(axis):
+            QMessageBox.information(
+                self, "Distribute",
+                "Select at least three objects with the Select tool "
+                "first, then choose a Distribute option.")
+            return
+        self._sync_toolbar()
+
+    def _edit_group(self):
+        tab = self._current_tab()
+        if not tab or not tab.edit_mode:
+            return
+        if not tab.group_multi():
+            QMessageBox.information(
+                self, "Group",
+                "Select at least two objects with the Select tool "
+                "first, then Group.")
+            return
+        self._sync_toolbar()
+
+    def _edit_ungroup(self):
+        tab = self._current_tab()
+        if not tab or not tab.edit_mode:
+            return
+        if not tab.ungroup_multi():
+            QMessageBox.information(
+                self, "Ungroup",
+                "Select a grouped object (Transform-click it, or "
+                "rubber-band its members) first, then Ungroup.")
+            return
+        self._sync_toolbar()
 
     def _edit_delete_selection(self):
         """Delete the text box or image currently held by the
@@ -10715,13 +11710,50 @@ class BoltPDFReader(QMainWindow):
         for text, color in presets:
             act = menu.addAction(text)
             act.setData((text, color))
+        # Saved custom-stamp library (persisted across sessions).
+        library = app_state().pref("stamp_library", []) or []
+        if library:
+            menu.addSeparator()
+            for entry in library:
+                try:
+                    t = entry.get("text", "")
+                    c = tuple(entry.get("color", (255, 0, 0)))
+                except Exception:
+                    continue
+                if t:
+                    menu.addAction(t).setData((t, c))
         menu.addSeparator()
-        menu.addAction("Custom...").setData(("__custom__", (255, 0, 0)))
+        menu.addAction("Date / Time stamp").setData(
+            ("__date__", (60, 60, 60)))
+        menu.addAction("Custom...").setData(
+            ("__custom__", (255, 0, 0)))
+        menu.addAction("Save text to library...").setData(
+            ("__savelib__", None))
+        menu.addAction("Bates / page numbering...").setData(
+            ("__bates__", None))
         chosen = menu.exec(self.cursor().pos())
         if not chosen or chosen.data() is None:
             return
         text, color = chosen.data()
-        if text == "__custom__":
+        if text == "__bates__":
+            self._bates_number(tab)
+            return
+        if text == "__savelib__":
+            t, ok = QInputDialog.getText(
+                self, "Save stamp", "Stamp text:")
+            if not ok or not t:
+                return
+            qc = QColorDialog.getColor(
+                QColor(255, 0, 0), self, "Stamp colour")
+            c = ((qc.red(), qc.green(), qc.blue())
+                 if qc.isValid() else (255, 0, 0))
+            lib = list(app_state().pref("stamp_library", []) or [])
+            lib.append({"text": t.upper(), "color": list(c)})
+            app_state().set_pref("stamp_library", lib)
+            return
+        if text == "__date__":
+            text = time.strftime("%Y-%m-%d %H:%M")
+        elif text == "__custom__":
             text, ok = QInputDialog.getText(
                 self, "Custom Stamp", "Stamp text:")
             if not ok or not text:
@@ -10730,10 +11762,60 @@ class BoltPDFReader(QMainWindow):
                 QColor(255, 0, 0), self, "Stamp Colour")
             if qc.isValid():
                 color = (qc.red(), qc.green(), qc.blue())
-        tab._pending_stamp_text = text.upper()
+            text = text.upper()
+        else:
+            text = text.upper()
+        tab._pending_stamp_text = text
         tab._pending_stamp_color = color
         tab.set_edit_action('stamp')
         self._sync_toolbar()
+
+    def _bates_number(self, tab):
+        """Stamp sequential Bates/page numbers in the bottom-centre of
+        every page (generates one undoable stamp record per page, so it
+        round-trips through Save As like any other stamp)."""
+        prefix, ok = QInputDialog.getText(
+            self, "Bates / page numbering",
+            "Prefix (e.g. 'ABC-' or blank for plain page numbers):")
+        if not ok:
+            return
+        start, ok = QInputDialog.getInt(
+            self, "Bates / page numbering",
+            "Start number:", 1, 0, 1_000_000)
+        if not ok:
+            return
+        digits, ok = QInputDialog.getInt(
+            self, "Bates / page numbering",
+            "Zero-pad to how many digits? (0 = none):", 4, 0, 12)
+        if not ok:
+            return
+        scale = tab._render_scale or 1.0
+        made = 0
+        for i in range(tab.num_pages):
+            num = start + i
+            label = f"{prefix}{str(num).zfill(digits) if digits else num}"
+            pw = tab._page_widths.get(i, 0.0) / scale
+            ph = tab._page_heights.get(i, 0.0) / scale
+            if pw <= 0 or ph <= 0:
+                continue
+            box_w, box_h = 200.0, 24.0
+            x0 = (pw - box_w) / 2.0
+            y0 = ph - box_h - 12.0
+            rec = EditRecord(
+                kind="stamp_add", page_idx=i,
+                new_rect=(x0, y0, x0 + box_w, y0 + box_h),
+                text=label, font_size=12.0, color=(60, 60, 60),
+                rotation=0.0)
+            tab._edit_records.append(rec)
+            tab._materialize_record(rec)
+            made += 1
+        if made:
+            tab._edit_checkpoint()
+            tab.status_changed.emit()
+            QMessageBox.information(
+                self, "Bates / page numbering",
+                f"Added numbering to {made} page(s). Use Save As to "
+                "write them into the PDF.")
 
     def _edit_shape(self, shape_action: str):
         """Arm one of the shape drawing tools."""
@@ -10755,6 +11837,17 @@ class BoltPDFReader(QMainWindow):
             tab.set_edit_action(None)
         else:
             tab.set_edit_action('redact')
+        self._sync_toolbar()
+
+    def _edit_highlight(self):
+        """Arm the highlight tool (saves as a real PDF highlight)."""
+        tab = self._current_tab()
+        if not tab or not tab.edit_mode:
+            return
+        if tab.edit_action == 'highlight':
+            tab.set_edit_action(None)
+        else:
+            tab.set_edit_action('highlight')
         self._sync_toolbar()
 
     def _edit_note(self):
@@ -10864,9 +11957,61 @@ class BoltPDFReader(QMainWindow):
                 event.accept()
                 return
 
+        # Ctrl+C / Ctrl+V / Ctrl+D → copy / paste / duplicate the
+        # Transform-selected edit object (works across pages & tabs).
+        if (event.key() in (Qt.Key.Key_C, Qt.Key.Key_V, Qt.Key.Key_D)
+                and event.modifiers()
+                & Qt.KeyboardModifier.ControlModifier
+                and not (event.modifiers()
+                         & Qt.KeyboardModifier.ShiftModifier)):
+            tab = self._current_tab()
+            if tab and tab.edit_mode:
+                k = event.key()
+                handled = False
+                if k == Qt.Key.Key_C:
+                    handled = tab.copy_selected_edit()
+                elif k == Qt.Key.Key_V:
+                    handled = tab.paste_edit()
+                else:
+                    handled = tab.duplicate_selected_edit()
+                if handled:
+                    self._sync_toolbar()
+                    event.accept()
+                    return
+
         if event.key() == Qt.Key.Key_Escape and self._is_fullscreen:
             self._toggle_fullscreen()
             return
+
+        # Multi-select (E2): arrow-nudge / Delete the rubber-band group.
+        tab = self._current_tab()
+        if (tab and tab.edit_mode and tab.has_multi_selection()
+                and tab._inline_editor is None):
+            step = (10.0 if (event.modifiers()
+                             & Qt.KeyboardModifier.ShiftModifier)
+                    else 2.0)
+            k = event.key()
+            if k == Qt.Key.Key_Left:
+                tab.nudge_multi(-step, 0)
+                event.accept()
+                return
+            if k == Qt.Key.Key_Right:
+                tab.nudge_multi(step, 0)
+                event.accept()
+                return
+            if k == Qt.Key.Key_Up:
+                tab.nudge_multi(0, -step)
+                event.accept()
+                return
+            if k == Qt.Key.Key_Down:
+                tab.nudge_multi(0, step)
+                event.accept()
+                return
+            if k in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+                if tab.delete_multi():
+                    self._sync_toolbar()
+                    event.accept()
+                    return
 
         # Delete / Backspace while a Transform selection is active →
         # remove the selected text box or image from the document.
@@ -12052,6 +13197,17 @@ def main():
     window.setAcceptDrops(True)
     window.show()
 
+    # Distinguish a clean quit from a crash: read last run's flag, then
+    # immediately arm "not clean" for THIS run (closeEvent flips it back
+    # to clean on a normal quit).  Default True so a first-ever run is
+    # treated as clean.
+    _was_clean = True
+    try:
+        _was_clean = bool(app_state().pref("clean_exit", True))
+        app_state().set_pref("clean_exit", False)
+    except Exception:
+        pass
+
     # Open any PDFs passed on the command line
     opened_from_args = False
     for arg in sys.argv[1:]:
@@ -12059,10 +13215,12 @@ def main():
             window.open_pdf_in_new_tab(arg)
             opened_from_args = True
 
-    # Otherwise restore the previous session (deferred so the window
-    # paints first — startup stays instant).
-    if not opened_from_args:
-        QTimer.singleShot(0, window.restore_last_session)
+    # A plain launch opens with NO document.  Only auto-reopen a PDF if
+    # the previous run ended abnormally (crash) with unsaved edits, so
+    # the user can recover that work.  (Deferred so the window paints
+    # first.)
+    if not opened_from_args and not _was_clean:
+        QTimer.singleShot(0, window.reopen_crashed_docs)
 
     # Prompt for default reader (only for installed frozen exe).
     # Deferred so the window appears first, then the dialog pops up
