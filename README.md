@@ -1,8 +1,38 @@
 # BoltPDF
 
-A lightweight, multi-core PDF reader and editor for Windows. Fast PDFium
-rendering, Windows built-in OCR (no external installs), tabs, annotation
-and redaction tools.
+A fast, free, lightweight **PDF reader and editor for Windows** — multi-core
+PDFium rendering, Windows built-in OCR (no extra installs), a tabbed
+interface, and a full annotation/editing toolset. No sign-up, no ads, no
+telemetry.
+
+## Features
+
+**Reading**
+- Multi-core PDFium rendering; tabbed, drag-and-drop multi-document
+- Windows built-in OCR with selectable text; full-text search
+- Page-thumbnail sidebar; recent files; per-document bookmarks
+- Reading modes: continuous scroll, single page, two-page spread
+- Night / sepia / warm / dim reading tints
+- Crash-safe: opens blank normally, offers to recover unsaved work
+  after an unclean shutdown
+
+**Editing (beta)**
+- Add / move / edit text and images; redaction and whiteout
+- Shapes (rectangle, circle, line, arrow) with dashed/dotted styles,
+  fill opacity, both-end arrowheads and Shift-constrain; highlighter
+- Stamps with a saved stamp library, date/time stamp and Bates /
+  page numbering; sticky notes (clickable in the Notes panel, plus an
+  Add Note button)
+- Full multi-step undo / redo; a properties inspector for the
+  selected object
+- Multi-select with group / ungroup, align and distribute; snapping
+  with alignment guides; copy / paste / duplicate (across pages)
+- In-place text editing that matches the original font style
+- Edits are saved as real, editable PDF annotations
+- Export pages to images or Word; combine / rebuild PDFs
+
+> The editing tools are in active beta — solid on most documents, but
+> may need care on unusual layouts or embedded fonts.
 
 ## Licence
 

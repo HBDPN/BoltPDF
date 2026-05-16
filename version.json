@@ -1,5 +1,5 @@
 {
     "version": "1.0.3",
     "download_url": "https://github.com/HBDPN/BoltPDF/releases/latest/download/BoltPDF.zip",
-    "changelog": "Initial release."
+    "changelog": "Major update: full reading + editing suite — thumbnails sidebar, continuous/single/two-page-spread modes, recent files, bookmarks, reading tints, crash recovery; editor with undo/redo, properties inspector, multi-select (group/align/distribute), snapping, shape styling, stamp library, Bates numbering, copy/paste, real-PDF-annotation export and font-faithful in-place text editing."
 }
