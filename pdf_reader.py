@@ -3157,6 +3157,14 @@ class TransformSelection:
         if self.record is None:
             return
         try:
+            # The object may have been dragged onto a DIFFERENT page.
+            # Re-home it to that page so its coordinates and its
+            # page link stay correct — e.g. a sticky note moved to
+            # another page now jumps there from the Notes panel.
+            pg = self.tab._page_at_scene_rect_center(self.rect)
+            if pg is not None:
+                self.page_idx = pg
+                self.record.page_idx = pg
             new_rect_pt = self.tab._scene_rect_to_pt(
                 self.page_idx, self.rect)
             self.record.new_rect = new_rect_pt
@@ -5357,6 +5365,21 @@ class DocumentTab(QWidget):
             py = self._page_positions.get(idx, 0)
             ph = self._page_heights.get(idx, 0)
             if py <= y <= py + ph:
+                return idx
+        return None
+
+    def _page_at_scene_rect_center(self, rect: QRectF):
+        """Page index whose scene box contains the centre of *rect*
+        (both X and Y, so it is correct in two-page-spread too).
+        Returns None if the centre is in a gap / outside every page."""
+        cx = rect.center().x()
+        cy = rect.center().y()
+        for idx in range(self._num_pages):
+            px = self._page_x.get(idx, 0.0)
+            py = self._page_positions.get(idx, 0.0)
+            pw = self._page_widths.get(idx, 0.0)
+            ph = self._page_heights.get(idx, 0.0)
+            if px <= cx <= px + pw and py <= cy <= py + ph:
                 return idx
         return None
 
@@ -10515,11 +10538,14 @@ class BoltPDFReader(QMainWindow):
             self._splitter.setSizes(sizes)
         vis_page = tab.get_visible_page() if tab._num_pages else 0
         all_notes = self._gather_all_notes(tab)
-        # Force rebuild if notes count changed (user added/removed notes)
-        new_count = sum(len(v) for v in all_notes.values())
-        if new_count != getattr(self, '_last_notes_count', -1):
+        # Rebuild when the per-page note distribution changes.  Total
+        # count alone misses a note *moved* to another page (same
+        # count, different page) — which would leave a stale jump
+        # target in the panel.
+        sig = tuple(sorted((pg, len(v)) for pg, v in all_notes.items()))
+        if sig != getattr(self, '_last_notes_sig', None):
             self._notes_panel.clear()
-            self._last_notes_count = new_count
+            self._last_notes_sig = sig
         self._notes_panel.show_notes(vis_page, all_notes)
 
     def _toggle_notes_panel(self):
