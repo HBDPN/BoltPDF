@@ -2049,10 +2049,9 @@ class PDFGraphicsView(QGraphicsView):
         elif self._fit_mode:
             delta = event.angleDelta().y()
             if delta != 0:
-                if delta < 0:
-                    self.fit_go_to_page(self._fit_current_page + 1)
-                else:
-                    self.fit_go_to_page(self._fit_current_page - 1)
+                # Step relative to the page currently in view so a
+                # prior scrollbar drag is respected (no jump back).
+                self.fit_step(1 if delta < 0 else -1)
             event.accept()
         else:
             super().wheelEvent(event)
@@ -2126,6 +2125,13 @@ class PDFGraphicsView(QGraphicsView):
         page_idx = max(0, min(page_idx, tab._num_pages - 1))
         self._fit_current_page = page_idx
         self._fit_to_page(page_idx)
+
+    def fit_step(self, direction: int):
+        """Move one page in fit mode, relative to the page ACTUALLY in
+        view — not a stored counter.  This keeps wheel/keyboard paging
+        in sync after the user has dragged the scrollbar (which moves
+        the view without touching the counter)."""
+        self.fit_go_to_page(self._detect_current_page() + direction)
 
     # -- text-flow selection ---------------------------------------------
     def _nearest_word_index(self, scene_pos: QPointF) -> int | None:
@@ -12055,11 +12061,11 @@ class BoltPDFReader(QMainWindow):
         if tab and tab.view._fit_mode:
             if event.key() in (Qt.Key.Key_PageDown, Qt.Key.Key_Down,
                                Qt.Key.Key_Space, Qt.Key.Key_Right):
-                tab.view.fit_go_to_page(tab.view._fit_current_page + 1)
+                tab.view.fit_step(1)
                 return
             elif event.key() in (Qt.Key.Key_PageUp, Qt.Key.Key_Up,
                                  Qt.Key.Key_Left):
-                tab.view.fit_go_to_page(tab.view._fit_current_page - 1)
+                tab.view.fit_step(-1)
                 return
             elif event.key() == Qt.Key.Key_Home:
                 tab.view.fit_go_to_page(0)
