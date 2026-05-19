@@ -3,25 +3,36 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>BoltPDF — Fast, Free PDF Reader &amp; Editor for Windows</title>
-<meta name="description" content="BoltPDF is a free, open-source (AGPL-3.0) PDF reader and editor for Windows 10 &amp; 11. Multi-core PDFium rendering, built-in OCR, tabs, two-page spread, annotations, redaction, undo/redo and more. No sign-up, no tracking." />
-<meta name="keywords" content="free pdf reader, pdf editor windows, lightweight pdf reader, pdf annotator, redact pdf, pdf ocr windows, open source pdf editor, pdfium viewer, two page spread pdf, BoltPDF" />
+<title>BoltPDF — Free PDF Reader &amp; Editor for Windows (OCR &amp; Annotate)</title>
+<meta name="description" content="BoltPDF is a free, open-source PDF reader and editor for Windows 10 &amp; 11 — fast PDFium rendering, built-in OCR, annotate, redact and edit PDF text. No sign-up, no tracking, no watermark. Download free." />
+<meta name="keywords" content="free pdf reader, free pdf editor windows, pdf editor no watermark, edit pdf text free, redact pdf free, ocr pdf free, annotate pdf, adobe acrobat reader alternative, open source pdf editor, lightweight pdf reader, two page pdf viewer, bates numbering free, pdfium viewer, BoltPDF" />
 <meta name="author" content="HBDepin" />
+<meta name="application-name" content="BoltPDF" />
 <meta name="theme-color" content="#0c1024" />
-<meta name="robots" content="index, follow, max-image-preview:large" />
+<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1" />
 <link rel="canonical" href="https://boltpdf.co.uk/" />
+<link rel="alternate" hreflang="en-gb" href="https://boltpdf.co.uk/" />
+<link rel="alternate" hreflang="x-default" href="https://boltpdf.co.uk/" />
 <link rel="icon" type="image/png" href="/favicon.png" />
 <link rel="apple-touch-icon" href="/icon.png" />
+<link rel="preload" as="image" href="/icon.png" fetchpriority="high" />
+<link rel="sitemap" type="application/xml" href="/sitemap.xml" />
 <meta property="og:type" content="website" />
 <meta property="og:site_name" content="BoltPDF" />
+<meta property="og:locale" content="en_GB" />
 <meta property="og:url" content="https://boltpdf.co.uk/" />
-<meta property="og:title" content="BoltPDF — Fast, Free PDF Reader &amp; Editor for Windows" />
-<meta property="og:description" content="Open-source PDF reader + editor for Windows. PDFium speed, built-in OCR, two-page spread, annotations, redaction, undo/redo. Free, no tracking." />
+<meta property="og:title" content="BoltPDF — Free PDF Reader &amp; Editor for Windows" />
+<meta property="og:description" content="Open-source PDF reader + editor for Windows. PDFium speed, built-in OCR, two-page spread, annotate, redact, edit text, undo/redo. Free, no tracking, no watermark." />
 <meta property="og:image" content="https://boltpdf.co.uk/icon.png" />
+<meta property="og:image:type" content="image/png" />
+<meta property="og:image:width" content="512" />
+<meta property="og:image:height" content="512" />
+<meta property="og:image:alt" content="BoltPDF app icon — a lightning bolt over a document" />
 <meta name="twitter:card" content="summary" />
-<meta name="twitter:title" content="BoltPDF — Fast, Free PDF Reader &amp; Editor for Windows" />
-<meta name="twitter:description" content="Open-source PDF reader + editor for Windows. PDFium speed, built-in OCR, annotations, redaction, undo/redo. Free." />
+<meta name="twitter:title" content="BoltPDF — Free PDF Reader &amp; Editor for Windows" />
+<meta name="twitter:description" content="Open-source PDF reader + editor for Windows. PDFium speed, built-in OCR, annotate, redact, edit text. Free, no watermark." />
 <meta name="twitter:image" content="https://boltpdf.co.uk/icon.png" />
+<meta name="twitter:image:alt" content="BoltPDF app icon" />
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
@@ -47,7 +58,48 @@
     { "@type": "Question", "name": "Can I edit PDFs with BoltPDF?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. As well as a fast reader, BoltPDF includes a full editing and annotation toolset (currently in beta): edit text and images, shapes, highlighter, redaction, sticky notes, stamps, Bates numbering, multi-select and undo/redo." } },
     { "@type": "Question", "name": "Does BoltPDF have OCR?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. BoltPDF uses Windows' built-in OCR to make scanned pages selectable and searchable. No extra software, API keys or internet connection is needed for OCR." } },
     { "@type": "Question", "name": "Does BoltPDF track me?", "acceptedAnswer": { "@type": "Answer", "text": "No. There is no telemetry, analytics or account. Your documents never leave your computer. The only network use is an optional check to GitHub for new versions." } },
-    { "@type": "Question", "name": "What systems does it support?", "acceptedAnswer": { "@type": "Answer", "text": "Windows 10 and Windows 11 (64-bit). The OCR feature uses the recognition engine built into Windows." } }
+    { "@type": "Question", "name": "What systems does it support?", "acceptedAnswer": { "@type": "Answer", "text": "Windows 10 and Windows 11 (64-bit). The OCR feature uses the recognition engine built into Windows." } },
+    { "@type": "Question", "name": "Does BoltPDF add watermarks?", "acceptedAnswer": { "@type": "Answer", "text": "No. BoltPDF never watermarks documents and never charges to remove anything. Exported and edited PDFs are clean." } },
+    { "@type": "Question", "name": "Does BoltPDF work offline?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. Every feature, including OCR, works completely offline. The only network use is an optional check to GitHub for a newer version." } },
+    { "@type": "Question", "name": "Is there a free PDF editor for Windows with no subscription?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. BoltPDF provides reading and a full editing and annotation toolset for free, with no subscription, account or trial." } }
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Organization",
+  "name": "HBDepin",
+  "url": "https://boltpdf.co.uk/",
+  "logo": "https://boltpdf.co.uk/icon.png"
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebSite",
+  "name": "BoltPDF",
+  "url": "https://boltpdf.co.uk/"
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    { "@type": "ListItem", "position": 1, "name": "BoltPDF", "item": "https://boltpdf.co.uk/" }
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "HowTo",
+  "name": "How to install BoltPDF on Windows",
+  "step": [
+    { "@type": "HowToStep", "position": 1, "name": "Download", "text": "Download the latest BoltPDF build from the GitHub Releases page." },
+    { "@type": "HowToStep", "position": 2, "name": "Install", "text": "Run the small Windows installer and, if you like, set BoltPDF as your default PDF app." },
+    { "@type": "HowToStep", "position": 3, "name": "Open a PDF", "text": "Drag a PDF onto BoltPDF or use Open. Switch on Edit mode to annotate or change it." }
   ]
 }
 </script>
@@ -182,6 +234,28 @@
   footer .links a{font-weight:600}
   footer .fine{font-size:12px;color:var(--muted)}
 
+  .toc{display:flex;flex-wrap:wrap;gap:8px 16px;justify-content:center;
+    margin:-8px auto 8px;max-width:760px}
+  .toc a{font-size:13px;color:var(--muted);font-weight:600}
+  .toc a:hover{color:var(--amber);text-decoration:none}
+  .prose{max-width:720px;margin:0 auto}
+  .prose h3{font-size:19px;font-weight:700;color:var(--ink);
+    margin:26px 0 8px;letter-spacing:-.01em}
+  .prose p{font-size:15px;color:var(--muted);margin-bottom:14px}
+  .prose ol{color:var(--muted);font-size:15px;margin:0 0 14px 20px}
+  .prose ol li{margin-bottom:6px}
+  .tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  table.cmp{width:100%;border-collapse:collapse;font-size:14px;
+    min-width:460px;background:var(--card);border:1px solid var(--border);
+    border-radius:14px;overflow:hidden;margin:6px 0 4px}
+  table.cmp th,table.cmp td{padding:12px 15px;text-align:left;
+    border-bottom:1px solid var(--border)}
+  table.cmp thead th{color:var(--ink);font-weight:700;
+    background:rgba(255,255,255,.04)}
+  table.cmp tbody th{color:var(--ink);font-weight:600}
+  table.cmp td{color:var(--muted)}
+  table.cmp tr:last-child td,table.cmp tr:last-child th{border-bottom:none}
+  table.cmp .y{color:var(--amber);font-weight:700}
   @media(prefers-reduced-motion:reduce){
     *{animation:none!important;transition:none!important;scroll-behavior:auto}
   }
@@ -192,7 +266,7 @@
 
 <header class="site">
   <div class="wrap">
-    <a class="brand" href="/"><img src="/icon.png" alt="BoltPDF logo" /> BoltPDF</a>
+    <a class="brand" href="/"><img src="/icon.png" alt="BoltPDF logo" width="34" height="34" decoding="async" /> BoltPDF</a>
     <nav>
       <a class="navlink" href="#features">Features</a>
       <a class="navlink" href="#editing">Editing</a>
@@ -208,7 +282,7 @@
     <div class="wrap">
       <span class="badge">⚡ Free &amp; open-source · Windows 10 &amp; 11</span>
       <div>
-        <img class="logo" src="/icon.png" alt="BoltPDF — free PDF reader and editor for Windows" />
+        <img class="logo" src="/icon.png" alt="BoltPDF — free PDF reader and editor for Windows" width="104" height="104" decoding="async" fetchpriority="high" />
       </div>
       <h1>Read <span class="accent">and edit</span> PDFs<br />at lightning speed</h1>
       <p class="sub">A fast, lightweight PDF reader <em>and</em> editor for Windows —
@@ -227,6 +301,15 @@
       </div>
     </div>
   </section>
+
+  <nav class="wrap toc" aria-label="On this page">
+    <a href="#features">Reading features</a>
+    <a href="#editing">Editing &amp; annotation</a>
+    <a href="#compare">vs Adobe Reader</a>
+    <a href="#howto">How-to guides</a>
+    <a href="#faq">FAQ</a>
+    <a href="https://github.com/HBDPN/BoltPDF/releases/latest">Download</a>
+  </nav>
 
   <section class="block" id="features">
     <div class="wrap">
@@ -304,6 +387,96 @@
         <details class="faq"><summary>Does it track me or send my files anywhere?</summary><div class="ans">No. There's no telemetry, analytics or account, and your documents never leave your computer. The only network use is an optional check to GitHub for a newer version.</div></details>
         <details class="faq"><summary>Does it work on Mac or Linux?</summary><div class="ans">Windows 10 and 11 (64-bit) only — the OCR relies on Windows' built-in recognition engine.</div></details>
         <details class="faq"><summary>Is it safe to install?</summary><div class="ans">It's fully open-source, so you (or anyone) can inspect the code and build it yourself. It ships as a small Windows installer that adds a Start Menu entry and an optional default-PDF-app association.</div></details>
+        <details class="faq"><summary>Does BoltPDF add watermarks?</summary><div class="ans">No. BoltPDF never watermarks your documents and never charges to remove anything — exported and edited PDFs are clean.</div></details>
+        <details class="faq"><summary>Does it work offline?</summary><div class="ans">Yes — every feature, including OCR, works completely offline. The only time it uses the internet is an optional check to GitHub for a newer version.</div></details>
+        <details class="faq"><summary>Can it edit or OCR scanned PDFs?</summary><div class="ans">Yes. Run the built-in OCR to make a scanned PDF's text selectable and searchable, then annotate, highlight or redact it like any other document.</div></details>
+        <details class="faq"><summary>Can I set BoltPDF as my default PDF reader?</summary><div class="ans">Yes. The installer can register BoltPDF as a Windows PDF handler and add a Start Menu entry, so PDFs open in BoltPDF automatically if you choose.</div></details>
+        <details class="faq"><summary>Is there a free PDF editor for Windows with no subscription?</summary><div class="ans">Yes — that's BoltPDF. Reading and the full editing/annotation toolset are free with no subscription, account or trial.</div></details>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="compare">
+    <div class="wrap">
+      <p class="eyebrow">Comparison</p>
+      <h2 class="title">A free Adobe Acrobat Reader alternative</h2>
+      <p class="lead">Acrobat Reader is free to read, but editing, OCR and
+        many tools sit behind a paid Acrobat Pro subscription, and the
+        installer is large. BoltPDF gives you reading <em>and</em>
+        editing for free, with a tiny footprint.</p>
+      <div class="tablewrap">
+        <table class="cmp">
+          <thead><tr><th scope="col">&nbsp;</th><th scope="col">BoltPDF</th><th scope="col">Adobe Acrobat Reader</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Price</th><td class="y">Free, forever</td><td>Free to read; editing/OCR need paid Acrobat Pro</td></tr>
+            <tr><th scope="row">Open-source</th><td class="y">Yes (AGPL-3.0)</td><td>No</td></tr>
+            <tr><th scope="row">Built-in OCR</th><td class="y">Yes — offline, no extra installs</td><td>Pro / online feature</td></tr>
+            <tr><th scope="row">Edit text &amp; annotate</th><td class="y">Yes (editing in beta)</td><td>Annotate yes; edit text needs Pro</td></tr>
+            <tr><th scope="row">Redaction</th><td class="y">Yes, free</td><td>Acrobat Pro only</td></tr>
+            <tr><th scope="row">Two-page spread</th><td class="y">Yes</td><td>Yes</td></tr>
+            <tr><th scope="row">Telemetry / accounts</th><td class="y">None (optional update check only)</td><td>Adobe account &amp; online services</td></tr>
+            <tr><th scope="row">Works fully offline</th><td class="y">Yes</td><td>Limited</td></tr>
+            <tr><th scope="row">Watermarks on output</th><td class="y">Never</td><td>n/a (no free editing)</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="lead" style="margin-top:18px">Comparison reflects the free
+        tiers; Adobe feature availability can change. BoltPDF's editor is
+        in active beta.</p>
+    </div>
+  </section>
+
+  <section class="block" id="howto">
+    <div class="wrap">
+      <p class="eyebrow">Guides</p>
+      <h2 class="title">How to do common PDF tasks — free</h2>
+      <div class="prose">
+        <h3>What is BoltPDF?</h3>
+        <p>BoltPDF is a free, open-source PDF reader and editor for
+          Windows 10 and 11. It renders pages with Google's PDFium
+          engine (the same one in Chrome), so even large or complex PDFs
+          open instantly. Unlike many "free" tools, BoltPDF never adds
+          watermarks, never asks you to sign up, and processes every
+          document entirely on your computer.</p>
+
+        <h3>How to OCR a scanned PDF for free</h3>
+        <p>Scanned PDFs are images, so the text can't be selected or
+          searched until you run OCR. In BoltPDF:</p>
+        <ol>
+          <li>Open the scanned PDF.</li>
+          <li>Click the OCR (&ldquo;Detect Text&rdquo;) button on the toolbar.</li>
+          <li>Wait a moment — BoltPDF overlays selectable, searchable
+            text using Windows' built-in OCR. No internet, API keys or
+            extra software needed.</li>
+        </ol>
+
+        <h3>How to redact a PDF</h3>
+        <p>Need to hide sensitive information before sharing?</p>
+        <ol>
+          <li>Turn on Edit mode and choose the Whiteout / Redact tool.</li>
+          <li>Drag a box over the text or image you want gone.</li>
+          <li>Use <strong>Save As</strong> — the covered content is
+            removed from the exported PDF, not just hidden.</li>
+        </ol>
+
+        <h3>How to edit text in a PDF</h3>
+        <p>In Edit mode (beta), click a block of existing text and type
+          your changes — BoltPDF matches the original font style so
+          edits blend in — then Save As. You can also add new text
+          boxes, images, shapes, highlights, stamps and page numbers.</p>
+
+        <h3>How to read a PDF as a two-page spread</h3>
+        <p>Open the Layout menu and pick <strong>Two-page spread</strong>
+          to view facing pages side by side, like a book — or switch to
+          continuous scroll or single-page at any time. Add reading
+          tints (night, sepia, warm, dim) for comfortable long reads.</p>
+
+        <h3>Who uses BoltPDF?</h3>
+        <p>Students reading textbooks and papers, professionals
+          reviewing and marking up contracts, accountants checking
+          statements, researchers annotating PDFs, and anyone who wants
+          a fast, private, no-cost alternative to bloated PDF software
+          on Windows.</p>
       </div>
     </div>
   </section>
