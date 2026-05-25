@@ -1,4 +1,0 @@
-User-agent: *
-Allow: /
-
-Sitemap: https://boltpdf.co.uk/sitemap.xml
