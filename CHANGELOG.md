@@ -2,6 +2,43 @@
 
 All notable changes to BoltPDF are documented here.
 
+## v1.0.4
+
+Focused on **text clarity** — every page now renders sharper, zooming
+stays crisp, and the app is fully licence-compliant for free
+distribution.
+
+### Sharper rendering
+
+- **Doubled the base render resolution** — the pixel target increased
+  from 1.5 Mpx to 3 Mpx per page, raising the effective DPI across all
+  common page sizes (US Letter/A4 now render at ~176 DPI, Legal at
+  ~159 DPI, A3/Tabloid at ~125 DPI — up from 88–127 DPI).
+- **Lossless page cache** — the on-disk page cache switched from JPEG
+  (quality 90) to PNG, eliminating the visible haloing and compression
+  artefacts that appeared around text edges whenever a cached page was
+  reloaded.
+- **Smooth-scaled page pixmaps** — every page item now uses bilinear
+  interpolation (Qt SmoothTransformation) so zooming in or out produces
+  clean anti-aliased text instead of jagged nearest-neighbour pixels.
+- **Adaptive hi-res re-render on zoom** — when you zoom past ~125 % of
+  the base scale, BoltPDF automatically re-renders the visible pages
+  (±2 neighbours) at the effective zoom DPI in a background thread.
+  The re-render is debounced (350 ms) so rapid scroll-zooming stays
+  smooth, and the hi-res pixmap is scaled to fit the existing scene
+  layout so overlays and annotations stay aligned.
+
+### Licence compliance
+
+- Verified full compliance with every third-party licence (AGPL-3.0,
+  GPL-3.0, LGPL-3.0, BSD, MIT, Apache-2.0, PSF) for free distribution.
+- The About dialog, AGPL-3.0 LICENSE file, and THIRD_PARTY_LICENSES.txt
+  are bundled in both the PyInstaller build and the Inno Setup installer.
+- The installer now shows the AGPL-3.0 licence text during setup and
+  records the copyright in Add/Remove Programs.
+
+---
+
 ## v1.0.3
 
 The first full public release. BoltPDF is now a fast PDF **reader *and*
