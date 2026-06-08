@@ -12,7 +12,7 @@
 ; ==========================================================================
 
 #define MyAppName      "BoltPDF"
-#define MyAppVersion   "1.0.3"
+#define MyAppVersion   "1.0.4"
 #define MyAppPublisher "BoltPDF"
 #define MyAppURL       "https://boltpdf.co.uk"
 #define MyAppExeName   "BoltPDF.exe"

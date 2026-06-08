@@ -48,7 +48,7 @@ import time
 import copy
 import hashlib
 
-__version__ = "1.0.3"
+__version__ = "1.0.4"
 _UPDATE_URL = "https://raw.githubusercontent.com/HBDPN/BoltPDF/main/version.json"
 import pypdfium2 as pdfium
 from PyQt6.QtWidgets import (
@@ -364,6 +364,62 @@ class OCRWorker(QThread):
 # ---------------------------------------------------------------------------
 import threading
 import queue as _queue_mod
+
+
+class HiResRenderWorker(QThread):
+    """Re-render a small set of pages at a higher scale for zoom clarity.
+
+    Runs in a background thread so the UI stays responsive.  Emits
+    ``page_ready`` for each page with the new QImage, then ``all_done``.
+    """
+    page_ready = pyqtSignal(int, QImage, float)   # idx, image, scale
+    all_done = pyqtSignal()
+
+    def __init__(self, doc_path, page_indices, scale, parent=None):
+        super().__init__(parent)
+        self.doc_path = doc_path
+        self.page_indices = list(page_indices)
+        self.scale = scale
+        self._cancel = False
+
+    def cancel(self):
+        self._cancel = True
+
+    def run(self):
+        try:
+            import pypdfium2 as _pdfium
+            doc = _pdfium.PdfDocument(self.doc_path)
+        except Exception:
+            self.all_done.emit()
+            return
+        try:
+            for idx in self.page_indices:
+                if self._cancel:
+                    break
+                try:
+                    page = doc[idx]
+                    try:
+                        bitmap = page.render(scale=self.scale,
+                                             draw_annots=False)
+                        pil = bitmap.to_pil()
+                    finally:
+                        page.close()
+                    if pil.mode != "RGBA":
+                        pil = pil.convert("RGBA")
+                    data = pil.tobytes("raw", "RGBA")
+                    qimg = QImage(
+                        data, pil.width, pil.height,
+                        QImage.Format.Format_RGBA8888).copy()
+                    if not self._cancel:
+                        self.page_ready.emit(idx, qimg, self.scale)
+                except Exception:
+                    pass
+        finally:
+            try:
+                doc.close()
+            except Exception:
+                pass
+            self.all_done.emit()
 
 
 def _render_worker_process(doc_path, scale, job_q, result_q):
@@ -3238,6 +3294,17 @@ class DocumentTab(QWidget):
         self._cache_dir: str | None = None
         self._cached_pages: set[int] = set()   # pages written to disk
 
+        # Adaptive hi-res re-render on zoom — when the user zooms in
+        # past the base render scale, visible pages are re-rendered at
+        # the higher effective scale so text stays sharp.
+        self._hires_worker: HiResRenderWorker | None = None
+        self._hires_scale: dict[int, float] = {}   # idx → scale rendered at
+        self._zoom_rerender_timer = QTimer(self)
+        self._zoom_rerender_timer.setSingleShot(True)
+        self._zoom_rerender_timer.setInterval(350)  # ms debounce
+        self._zoom_rerender_timer.timeout.connect(
+            self._adaptive_rerender)
+
         # OCR state
         self._ocr_active = False
         self._ocr_done_pages: set[int] = set()
@@ -3374,6 +3441,7 @@ class DocumentTab(QWidget):
         self._scene = QGraphicsScene(self)
         self._view = PDFGraphicsView(self._scene, self)
         self._view.setBackgroundBrush(Qt.GlobalColor.darkGray)
+        self._view.zoom_changed.connect(self._on_zoom_for_rerender)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -3410,14 +3478,15 @@ class DocumentTab(QWidget):
 
     # -- File loading -----------------------------------------------------
     # Target pixel area — scale is chosen so pages stay near this size.
-    # 1500×1000 ≈ 1.5 Mpx, sharp enough for a 1080p display.
-    _TARGET_PIXELS = 1_500_000
+    # ~3 Mpx gives ≥150 DPI on all common page sizes (Letter, A4, A3,
+    # Legal, Tabloid) which keeps text sharp.
+    _TARGET_PIXELS = 3_000_000
 
     def _choose_render_scale(self, pt_w, pt_h):
         """Pick a render scale that keeps the rasterised page near
-        ``_TARGET_PIXELS`` pixels.  Clamps to [0.5, 3.0]."""
+        ``_TARGET_PIXELS`` pixels.  Clamps to [1.0, 4.0]."""
         raw = (self._TARGET_PIXELS / max(pt_w * pt_h, 1)) ** 0.5
-        return max(0.5, min(round(raw, 2), 3.0))
+        return max(1.0, min(round(raw, 2), 4.0))
 
     def load_pdf(self, path):
         self._stop_workers()
@@ -3471,10 +3540,14 @@ class DocumentTab(QWidget):
         self._has_annotations = False
         self._search_text_cache = None
 
-        # Reset disk cache
+        # Reset disk cache and hi-res state
         self._cleanup_cache()
         self._cache_dir = tempfile.mkdtemp(prefix="boltpdf_cache_")
         self._cached_pages.clear()
+        if self._hires_worker is not None:
+            self._hires_worker.cancel()
+            self._hires_worker = None
+        self._hires_scale.clear()
 
         self._doc_path = path
 
@@ -3663,10 +3736,10 @@ class DocumentTab(QWidget):
         if abs(idx - vis) > self.PAGE_BUFFER:
             return
 
-        # Persist to disk cache (JPEG — ~15× smaller than BMP, fast I/O)
+        # Persist to disk cache (PNG — lossless, no JPEG haloing on text)
         if self._cache_dir:
-            cache_path = os.path.join(self._cache_dir, f"{idx}.jpg")
-            if qimg.save(cache_path, "JPEG", 90):
+            cache_path = os.path.join(self._cache_dir, f"{idx}.png")
+            if qimg.save(cache_path, "PNG"):
                 self._cached_pages.add(idx)
             else:
                 print(f"[BoltPDF] Page {idx + 1}: cache write failed",
@@ -3690,6 +3763,8 @@ class DocumentTab(QWidget):
                   file=sys.stderr)
             return
         item = QGraphicsPixmapItem(pixmap)
+        item.setTransformationMode(
+            Qt.TransformationMode.SmoothTransformation)
         item.setPos(self._page_x.get(idx, 0.0),
                     self._page_positions.get(idx, 0))
         item.setZValue(0)
@@ -3785,13 +3860,14 @@ class DocumentTab(QWidget):
         item = self._page_items.pop(idx, None)
         if item is not None:
             self._scene.removeItem(item)
+        self._hires_scale.pop(idx, None)
         self._remove_annotation_overlays(idx)
 
     def _load_cached_image(self, idx) -> QImage | None:
         """Read a previously cached page image from disk."""
         if idx not in self._cached_pages or not self._cache_dir:
             return None
-        cache_path = os.path.join(self._cache_dir, f"{idx}.jpg")
+        cache_path = os.path.join(self._cache_dir, f"{idx}.png")
         qimg = QImage(cache_path)
         if qimg.isNull():
             return None
@@ -3823,7 +3899,7 @@ class DocumentTab(QWidget):
                 self._cached_pages.discard(idx)
                 if self._cache_dir:
                     try:
-                        os.unlink(os.path.join(self._cache_dir, f"{idx}.jpg"))
+                        os.unlink(os.path.join(self._cache_dir, f"{idx}.png"))
                     except OSError:
                         pass
 
@@ -3834,6 +3910,80 @@ class DocumentTab(QWidget):
 
     def _on_render_error(self, msg):
         print(f"[BoltPDF] Render warning: {msg}", file=sys.stderr)
+
+    # -- Adaptive hi-res re-render on zoom --------------------------------
+    def _on_zoom_for_rerender(self, view_scale: float):
+        """Called whenever the user zooms.  Restarts the debounce timer
+        so we only re-render once the zoom gesture settles."""
+        self._zoom_rerender_timer.start()  # (re)start the 350 ms timer
+
+    def _adaptive_rerender(self):
+        """Debounced callback — check if visible pages need a higher-res
+        render and kick off a background worker if so."""
+        if not self._doc_path or not self._num_pages:
+            return
+        view_scale = getattr(self._view, "_current_scale", 1.0) or 1.0
+        needed_scale = self._render_scale * view_scale
+        needed_scale = min(needed_scale, self._render_scale * 6.0)
+        if needed_scale <= self._render_scale * 1.25:
+            if self._hires_scale:
+                self._hires_scale.clear()
+            return
+
+        vis = self.get_visible_page()
+        lo = max(0, vis - 2)
+        hi = min(self._num_pages - 1, vis + 2)
+        targets = []
+        for idx in range(lo, hi + 1):
+            prev = self._hires_scale.get(idx, 0)
+            if prev >= needed_scale * 0.95:
+                continue
+            targets.append(idx)
+
+        if not targets:
+            return
+
+        if self._hires_worker is not None:
+            self._hires_worker.cancel()
+            try:
+                self._hires_worker.wait(500)
+            except Exception:
+                pass
+            self._hires_worker = None
+
+        self._hires_worker = HiResRenderWorker(
+            self._doc_path, targets, needed_scale, self)
+        self._hires_worker.page_ready.connect(self._on_hires_page)
+        self._hires_worker.all_done.connect(self._on_hires_done)
+        self._hires_worker.start()
+
+    def _on_hires_page(self, idx: int, qimg: QImage, scale: float):
+        """Replace the existing page pixmap with a higher-resolution one."""
+        if qimg.isNull():
+            return
+        pixmap = QPixmap.fromImage(qimg)
+        if pixmap.isNull():
+            return
+        old_item = self._page_items.pop(idx, None)
+        if old_item is not None:
+            self._scene.removeItem(old_item)
+        item = QGraphicsPixmapItem(pixmap)
+        item.setTransformationMode(
+            Qt.TransformationMode.SmoothTransformation)
+        shrink = self._render_scale / scale
+        item.setScale(shrink)
+        item.setPos(self._page_x.get(idx, 0.0),
+                    self._page_positions.get(idx, 0))
+        item.setZValue(0)
+        self._scene.addItem(item)
+        self._page_items[idx] = item
+        self._hires_scale[idx] = scale
+        self._remove_annotation_overlays(idx)
+        self._draw_annotation_overlays(idx)
+
+    def _on_hires_done(self):
+        """Clean up the finished hi-res worker."""
+        self._hires_worker = None
 
     # -- Navigation / session helpers -------------------------------------
     def current_page_index(self) -> int:
@@ -7281,7 +7431,7 @@ class DocumentTab(QWidget):
         # Workers that expose a cooperative .cancel() flag get asked to
         # stop first, then joined with a short timeout.
         for attr in ("_renderer", "_ocr_worker", "_img_detector",
-                     "_search_worker"):
+                     "_search_worker", "_hires_worker"):
             w = getattr(self, attr, None)
             if w is None:
                 continue
